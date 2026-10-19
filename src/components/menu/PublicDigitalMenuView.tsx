@@ -1071,14 +1071,28 @@ export function PublicDigitalMenuView({
                           </div>
                         </div>
 
-                        {item.imageUrl && (
-                          <div className="w-20 h-20 rounded-xl overflow-hidden bg-slate-900 border border-slate-800 flex-shrink-0">
+                        {item.imageUrl ? (
+                          <div className="w-20 h-20 rounded-xl overflow-hidden bg-slate-900 border border-slate-800 flex-shrink-0 relative">
                             <img
                               src={item.imageUrl}
                               alt={item.name}
                               className="w-full h-full object-cover"
                               loading="lazy"
+                              onError={(e) => {
+                                const target = e.currentTarget;
+                                target.style.display = "none";
+                                const fallback = target.nextElementSibling as HTMLElement;
+                                if (fallback) fallback.style.display = "flex";
+                              }}
                             />
+                            <div className="hidden w-full h-full bg-slate-900/60 flex-col items-center justify-center text-slate-500">
+                              <UtensilsCrossed className="w-6 h-6 stroke-[1.5]" />
+                            </div>
+                          </div>
+                        ) : (
+                          <div className="w-20 h-20 rounded-xl bg-slate-900/40 border border-slate-800/80 flex-shrink-0 flex flex-col items-center justify-center text-slate-500 p-2 text-center">
+                            <UtensilsCrossed className="w-5 h-5 stroke-[1.5] text-slate-500 mb-1" />
+                            <span className="text-[9px] text-slate-500 font-medium leading-tight">Fresh Dish</span>
                           </div>
                         )}
                       </div>

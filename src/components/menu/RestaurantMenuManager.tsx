@@ -730,7 +730,7 @@ export function RestaurantMenuManager({
                       </div>
                     </div>
 
-                    {item.imageUrl && (
+                    {item.imageUrl ? (
                       <div className="w-16 h-16 rounded-xl overflow-hidden bg-slate-900 border border-slate-800 flex-shrink-0">
                         <img
                           src={item.imageUrl}
@@ -738,6 +738,11 @@ export function RestaurantMenuManager({
                           className="w-full h-full object-cover"
                           loading="lazy"
                         />
+                      </div>
+                    ) : (
+                      <div className="w-16 h-16 rounded-xl bg-slate-900/60 border border-dashed border-slate-800 flex-shrink-0 flex flex-col items-center justify-center text-slate-500">
+                        <ImageIcon className="w-5 h-5 stroke-[1.5]" />
+                        <span className="text-[9px] text-slate-500 font-medium mt-0.5">No photo</span>
                       </div>
                     )}
                   </div>
@@ -1312,9 +1317,18 @@ export function RestaurantMenuManager({
                 <button
                   type="submit"
                   disabled={itemSubmitting || imageUploading}
-                  className="px-5 py-2 rounded-xl text-xs font-bold text-slate-950 bg-amber-400 hover:bg-amber-300 transition cursor-pointer disabled:opacity-50"
+                  className="px-5 py-2 rounded-xl text-xs font-bold text-slate-950 bg-amber-400 hover:bg-amber-300 transition cursor-pointer disabled:opacity-50 flex items-center justify-center gap-1.5 shadow-md shadow-amber-500/20"
                 >
-                  {itemSubmitting ? "Saving..." : editingItem ? "Update Dish" : "Add to Menu"}
+                  {itemSubmitting ? (
+                    <>
+                      <Loader2 className="w-3.5 h-3.5 animate-spin text-slate-950" />
+                      <span>Saving Dish...</span>
+                    </>
+                  ) : editingItem ? (
+                    "Update Dish"
+                  ) : (
+                    "Add to Menu"
+                  )}
                 </button>
               </div>
             </form>
