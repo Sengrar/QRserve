@@ -83,12 +83,108 @@ export function validateImageBuffer(buffer: Buffer, declaredMimeType?: string): 
 }
 
 /**
+ * Detects whether persistent cloud object storage (AWS S3, Cloudflare R2, Supabase) is configured.
+ */
+export function isCloudStorageConfigured(): boolean {
+  return Boolean(
+    process.env.S3_BUCKET &&
+    process.env.S3_ACCESS_KEY_ID &&
+    process.env.S3_SECRET_ACCESS_KEY
+  );
+}
+
+/**
+ * Returns configuration guidance if cloud storage is not yet set up for production.
+ */
+export function getStorageConfigurationStatus(): {
+  provider: "s3" | "local";
+  configured: boolean;
+  missingEnv: string[];
+} {
+  const missing: string[] = [];
+  if (!process.env.S3_BUCKET) missing.push("S3_BUCKET");
+  if (!process.env.S3_ACCESS_KEY_ID) missing.push("S3_ACCESS_KEY_ID");
+  if (!process.env.S3_SECRET_ACCESS_KEY) missing.push("S3_SECRET_ACCESS_KEY");
+
+  return {
+    provider: missing.length === 0 ? "s3" : "local",
+    configured: missing.length === 0,
+    missingEnv: missing,
+  };
+}
+
+/**
+ * Uploads an image buffer to S3-compatible cloud storage using SigV4 signing.
+ */
+async function uploadToS3(
+  key: string,
+  buffer: Buffer,
+  mimeType: string
+): Promise<string> {
+  const bucket = process.env.S3_BUCKET!;
+  const region = process.env.S3_REGION || "auto";
+  const rawEndpoint = process.env.S3_ENDPOINT || `https://${bucket}.s3.${region}.amazonaws.com`;
+  const accessKeyId = process.env.S3_ACCESS_KEY_ID!;
+  const secretAccessKey = process.env.S3_SECRET_ACCESS_KEY!;
+
+  const baseEndpoint = rawEndpoint.endsWith("/") ? rawEndpoint.slice(0, -1) : rawEndpoint;
+  const targetUrl = new URL(`${baseEndpoint}/${bucket}/${key}`);
+
+  const now = new Date();
+  const amzDate = now.toISOString().replace(/[:-]|\.\d{3}/g, "");
+  const dateStamp = amzDate.slice(0, 8);
+  const payloadHash = crypto.createHash("sha256").update(buffer).digest("hex");
+
+  const host = targetUrl.host;
+  const canonicalUri = targetUrl.pathname;
+  const canonicalHeaders = `host:${host}\nx-amz-content-sha256:${payloadHash}\nx-amz-date:${amzDate}\n`;
+  const signedHeaders = "host;x-amz-content-sha256;x-amz-date";
+  const canonicalRequest = `PUT\n${canonicalUri}\n\n${canonicalHeaders}\n${signedHeaders}\n${payloadHash}`;
+
+  const service = "s3";
+  const credentialScope = `${dateStamp}/${region}/${service}/aws4_request`;
+  const stringToSign = `AWS4-HMAC-SHA256\n${amzDate}\n${credentialScope}\n${crypto.createHash("sha256").update(canonicalRequest).digest("hex")}`;
+
+  const kDate = crypto.createHmac("sha256", `AWS4${secretAccessKey}`).update(dateStamp).digest();
+  const kRegion = crypto.createHmac("sha256", kDate).update(region).digest();
+  const kService = crypto.createHmac("sha256", kRegion).update(service).digest();
+  const kSigning = crypto.createHmac("sha256", kService).update("aws4_request").digest();
+  const signature = crypto.createHmac("sha256", kSigning).update(stringToSign).digest("hex");
+
+  const authHeader = `AWS4-HMAC-SHA256 Credential=${accessKeyId}/${credentialScope}, SignedHeaders=${signedHeaders}, Signature=${signature}`;
+
+  const res = await fetch(targetUrl.toString(), {
+    method: "PUT",
+    headers: {
+      Host: host,
+      "Content-Type": mimeType,
+      "x-amz-date": amzDate,
+      "x-amz-content-sha256": payloadHash,
+      Authorization: authHeader,
+    },
+    body: new Uint8Array(buffer),
+  });
+
+  if (!res.ok) {
+    const errorText = await res.text().catch(() => "");
+    throw new Error(`S3 upload failed (${res.status}): ${errorText}`);
+  }
+
+  const publicBase = process.env.S3_PUBLIC_URL || baseEndpoint;
+  const cleanPublic = publicBase.endsWith("/") ? publicBase.slice(0, -1) : publicBase;
+  return `${cleanPublic}/${bucket}/${key}`;
+}
+
+/**
  * Returns the base storage directory for uploaded assets.
- * Can be overridden via STORAGE_DIR environment variable.
+ * Respects STORAGE_DIR and Vercel serverless /tmp isolation.
  */
 export function getStorageBaseDir(): string {
   if (process.env.STORAGE_DIR) {
     return path.resolve(process.env.STORAGE_DIR);
+  }
+  if (process.env.VERCEL === "1") {
+    return path.resolve("/tmp", "qrserve", "uploads");
   }
   return path.resolve(process.cwd(), "storage", "uploads");
 }
@@ -104,18 +200,29 @@ export function getRestaurantStorageDir(restaurantId: string): string {
 
 /**
  * Saves a validated image buffer to persistent tenant storage.
- * Returns the serving URL and metadata.
+ * Supports S3/R2 cloud storage when configured, with local/Vercel fallback.
  */
 export async function saveRestaurantImage(
   restaurantId: string,
   buffer: Buffer,
   extension: "jpg" | "png" | "webp"
 ): Promise<{ url: string; filename: string; size: number }> {
-  const dir = getRestaurantStorageDir(restaurantId);
-  await fs.mkdir(dir, { recursive: true });
-
   const uniqueId = crypto.randomUUID();
   const filename = `${uniqueId}.${extension}`;
+
+  if (isCloudStorageConfigured()) {
+    const mime = extension === "jpg" ? "image/jpeg" : extension === "png" ? "image/png" : "image/webp";
+    const key = `restaurants/${restaurantId}/${filename}`;
+    const cloudUrl = await uploadToS3(key, buffer, mime);
+    return {
+      url: cloudUrl,
+      filename,
+      size: buffer.length,
+    };
+  }
+
+  const dir = getRestaurantStorageDir(restaurantId);
+  await fs.mkdir(dir, { recursive: true });
   const filePath = path.join(dir, filename);
 
   await fs.writeFile(filePath, buffer);

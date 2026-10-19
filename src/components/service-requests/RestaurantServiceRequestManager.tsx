@@ -166,6 +166,9 @@ export function RestaurantServiceRequestManager({
   useEffect(() => {
     if (!autoRefresh) return;
     const interval = setInterval(() => {
+      if (typeof document !== "undefined" && document.hidden) {
+        return; // Pause when tab is not visible
+      }
       fetchRequests();
     }, 10000);
     return () => clearInterval(interval);

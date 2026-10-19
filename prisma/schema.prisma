@@ -139,6 +139,7 @@ model MenuItem {
   orderItems  OrderItem[]
 
   @@index([categoryId])
+  @@index([categoryId, isAvailable])
 }
 
 model Order {
@@ -176,6 +177,8 @@ model Order {
   @@index([couponId])
   @@index([orderNumber])
   @@index([createdAt])
+  @@index([restaurantId, createdAt])
+  @@index([restaurantId, status])
 }
 
 model OrderItem {
@@ -376,6 +379,7 @@ model ServiceRequest {
   @@index([tableId])
   @@index([status])
   @@index([createdAt])
+  @@index([restaurantId, status])
 }
 
 enum CouponDiscountType {

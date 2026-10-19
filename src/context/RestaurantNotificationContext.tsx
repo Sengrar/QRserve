@@ -312,6 +312,9 @@ export function RestaurantNotificationProvider({ restaurantId, children }: Provi
     fetchAndProcessRequests();
 
     const interval = setInterval(() => {
+      if (typeof document !== "undefined" && document.hidden) {
+        return; // Pause polling when tab is hidden to save battery and network
+      }
       fetchAndProcessRequests();
     }, 8000);
 

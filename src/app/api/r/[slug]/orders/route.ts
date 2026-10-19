@@ -5,6 +5,7 @@ import { canPubliclyAccessRestaurant, evaluateRestaurantGovernance } from "@/lib
 import { CreateOrderSchema } from "@/lib/validations/order";
 import { generateOrderNumber, generateOrderAccessToken } from "@/lib/orders";
 import { calculateMixedOrderTax } from "@/lib/orders/tax";
+import { validateCouponEligibility } from "@/lib/coupons/calculator";
 
 export const dynamic = "force-dynamic";
 
@@ -291,7 +292,6 @@ export async function POST(request: Request, context: RouteContext) {
         });
       }
 
-      const { validateCouponEligibility } = await import("@/lib/coupons/calculator");
       const evaluation = validateCouponEligibility(coupon, {
         subtotal: preliminaryGrossSubtotal,
         restaurantId: restaurant.id,

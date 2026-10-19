@@ -114,14 +114,11 @@ export async function PATCH(request: Request, context: RouteContext) {
 
     const updated = await prisma.order.findUnique({
       where: { id: orderId },
-      include: {
-        table: {
-          select: {
-            tableNumber: true,
-            name: true,
-          },
-        },
-        items: true,
+      select: {
+        id: true,
+        orderNumber: true,
+        status: true,
+        updatedAt: true,
       },
     });
 
