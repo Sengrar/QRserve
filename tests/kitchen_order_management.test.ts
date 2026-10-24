@@ -278,6 +278,7 @@ describe("Phase 5: Kitchen Order Management System", () => {
         customerPhone: null,
         customerName: null,
         idempotencyKey: null,
+        diningSessionId: null,
         createdAt: new Date(),
         updatedAt: new Date(),
       });

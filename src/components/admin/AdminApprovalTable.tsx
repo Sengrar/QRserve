@@ -3,7 +3,7 @@
 import React, { useState } from "react";
 import { ApprovalStatus } from "@prisma/client";
 import { ApprovalBadge, ActivationBadge, SuspensionBadge } from "@/components/ui/Badge";
-import { Check, X, ShieldAlert, ShieldCheck, User, Mail, Calendar, AlertCircle, Search, Tag } from "lucide-react";
+import { Check, X, ShieldAlert, ShieldCheck, User, Mail, Calendar, AlertCircle, Search, Tag, Layers, QrCode } from "lucide-react";
 import { formatDate } from "@/lib/utils/format";
 
 interface AdminRestaurant {
@@ -18,6 +18,9 @@ interface AdminRestaurant {
   isActive: boolean;
   isSuspended: boolean;
   createdAt: string | Date;
+  tableLimit?: number;
+  totalTables?: number;
+  activeTables?: number;
   members: {
     user: {
       id: string;
@@ -40,6 +43,13 @@ export function AdminApprovalTable({ initialRestaurants }: AdminApprovalTablePro
   const [rejectionReason, setRejectionReason] = useState("");
   const [error, setError] = useState<string | null>(null);
 
+  // Table Limit Modal State
+  const [tableLimitRestaurant, setTableLimitRestaurant] = useState<AdminRestaurant | null>(null);
+  const [tableLimitInput, setTableLimitInput] = useState<string>("10");
+  const [tableLimitSubmitting, setTableLimitSubmitting] = useState(false);
+  const [tableLimitError, setTableLimitError] = useState<string | null>(null);
+  const [tableLimitSuccess, setTableLimitSuccess] = useState<string | null>(null);
+
   // Custom Pricing Modal state
   const [pricingRestaurant, setPricingRestaurant] = useState<AdminRestaurant | null>(null);
   const [pricingLoading, setPricingLoading] = useState(false);
@@ -50,9 +60,68 @@ export function AdminApprovalTable({ initialRestaurants }: AdminApprovalTablePro
   const [pricingPaymentStatus, setPricingPaymentStatus] = useState<"PAID" | "PENDING" | "OVERDUE">("PAID");
   const [pricingSubStatus, setPricingSubStatus] = useState<"ACTIVE" | "SUSPENDED" | "EXPIRED">("ACTIVE");
   const [pricingCurrency, setPricingCurrency] = useState("INR");
+  const [pricingTableLimit, setPricingTableLimit] = useState("10");
   const [pricingSubmitting, setPricingSubmitting] = useState(false);
   const [pricingError, setPricingError] = useState<string | null>(null);
   const [pricingSuccess, setPricingSuccess] = useState<string | null>(null);
+
+  function openTableLimitModal(r: AdminRestaurant) {
+    setTableLimitRestaurant(r);
+    setTableLimitInput(String(r.tableLimit ?? 10));
+    setTableLimitError(null);
+    setTableLimitSuccess(null);
+  }
+
+  async function handleSaveTableLimit(e: React.FormEvent) {
+    e.preventDefault();
+    if (!tableLimitRestaurant) return;
+    setTableLimitError(null);
+    setTableLimitSuccess(null);
+
+    const parsedLimit = parseInt(tableLimitInput, 10);
+    if (isNaN(parsedLimit) || parsedLimit < 1 || parsedLimit > 10000) {
+      setTableLimitError("Allowed tables must be a number between 1 and 10,000.");
+      return;
+    }
+
+    setTableLimitSubmitting(true);
+    try {
+      const res = await fetch(`/api/admin/restaurants/${tableLimitRestaurant.id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ tableLimit: parsedLimit }),
+      });
+
+      const data = await res.json();
+      if (!res.ok || !data.success) {
+        setTableLimitError(data.error || "Failed to update table limit.");
+        return;
+      }
+
+      setRestaurants((prev) =>
+        prev.map((r) =>
+          r.id === tableLimitRestaurant.id
+            ? {
+                ...r,
+                tableLimit: parsedLimit,
+                ...(data.data?.tableLimit !== undefined && { tableLimit: data.data.tableLimit }),
+                ...(data.data?.activeTables !== undefined && { activeTables: data.data.activeTables }),
+                ...(data.data?.totalTables !== undefined && { totalTables: data.data.totalTables }),
+              }
+            : r
+        )
+      );
+
+      setTableLimitSuccess(`Allowed tables successfully set to ${parsedLimit}!`);
+      setTimeout(() => {
+        setTableLimitRestaurant(null);
+      }, 600);
+    } catch {
+      setTableLimitError("Network error while updating table limit.");
+    } finally {
+      setTableLimitSubmitting(false);
+    }
+  }
 
   async function openPricing(r: AdminRestaurant) {
     setPricingRestaurant(r);
@@ -78,6 +147,7 @@ export function AdminApprovalTable({ initialRestaurants }: AdminApprovalTablePro
         setPricingPaymentStatus(sub.paymentStatus || "PAID");
         setPricingSubStatus(sub.status || "ACTIVE");
         setPricingCurrency(sub.currency || "INR");
+        setPricingTableLimit(String(sub.tableLimit != null ? sub.tableLimit : r.tableLimit || 10));
       } else {
         setPricingMonthly("499");
         setPricingYearly("4990");
@@ -86,6 +156,7 @@ export function AdminApprovalTable({ initialRestaurants }: AdminApprovalTablePro
         setPricingPaymentStatus("PAID");
         setPricingSubStatus("ACTIVE");
         setPricingCurrency("INR");
+        setPricingTableLimit(String(r.tableLimit || 10));
       }
     } catch {
       setPricingError("Failed to fetch current subscription details.");
@@ -102,6 +173,7 @@ export function AdminApprovalTable({ initialRestaurants }: AdminApprovalTablePro
 
     const monthlyVal = parseFloat(pricingMonthly);
     const yearlyVal = parseFloat(pricingYearly);
+    const tableLimitVal = parseInt(pricingTableLimit, 10);
 
     if (isNaN(monthlyVal) || monthlyVal < 0) {
       setPricingError("Please enter a valid monthly price.");
@@ -109,6 +181,10 @@ export function AdminApprovalTable({ initialRestaurants }: AdminApprovalTablePro
     }
     if (isNaN(yearlyVal) || yearlyVal < 0) {
       setPricingError("Please enter a valid yearly price.");
+      return;
+    }
+    if (isNaN(tableLimitVal) || tableLimitVal < 1 || tableLimitVal > 10000) {
+      setPricingError("Allowed tables must be a number between 1 and 10,000.");
       return;
     }
 
@@ -125,6 +201,7 @@ export function AdminApprovalTable({ initialRestaurants }: AdminApprovalTablePro
           paymentStatus: pricingPaymentStatus,
           subscriptionStatus: pricingSubStatus,
           currency: pricingCurrency.trim() || "INR",
+          tableLimit: tableLimitVal,
         }),
       });
 
@@ -134,7 +211,13 @@ export function AdminApprovalTable({ initialRestaurants }: AdminApprovalTablePro
         return;
       }
 
-      setPricingSuccess("Custom pricing saved successfully!");
+      setRestaurants((prev) =>
+        prev.map((item) =>
+          item.id === pricingRestaurant.id ? { ...item, tableLimit: tableLimitVal } : item
+        )
+      );
+
+      setPricingSuccess("Custom pricing & table limit saved successfully!");
       setTimeout(() => {
         setPricingRestaurant(null);
       }, 500);
@@ -328,7 +411,8 @@ export function AdminApprovalTable({ initialRestaurants }: AdminApprovalTablePro
               <tr>
                 <th className="px-6 py-4">Restaurant</th>
                 <th className="px-6 py-4">Owner Info</th>
-                <th className="px-6 py-4">Current Governance Status</th>
+                <th className="px-6 py-4">Allowed Tables & Usage</th>
+                <th className="px-6 py-4">Governance Status</th>
                 <th className="px-6 py-4">Registered Date</th>
                 <th className="px-6 py-4 text-right">Super Admin Actions</th>
               </tr>
@@ -336,7 +420,7 @@ export function AdminApprovalTable({ initialRestaurants }: AdminApprovalTablePro
             <tbody className="divide-y divide-slate-800/80">
               {filteredRestaurants.length === 0 ? (
                 <tr>
-                  <td colSpan={5} className="px-6 py-12 text-center text-slate-500">
+                  <td colSpan={6} className="px-6 py-12 text-center text-slate-500">
                     No restaurants match the selected filter.
                   </td>
                 </tr>
@@ -346,6 +430,9 @@ export function AdminApprovalTable({ initialRestaurants }: AdminApprovalTablePro
                   const isApproved = restaurant.approvalStatus === ApprovalStatus.APPROVED;
                   const isRejected = restaurant.approvalStatus === ApprovalStatus.REJECTED;
                   const isLoading = loadingId === restaurant.id;
+                  const activeCount = restaurant.activeTables ?? 0;
+                  const tableLimit = restaurant.tableLimit ?? 10;
+                  const isOverLimit = activeCount >= tableLimit;
 
                   return (
                     <tr key={restaurant.id} className="hover:bg-slate-900/40 transition">
@@ -377,6 +464,51 @@ export function AdminApprovalTable({ initialRestaurants }: AdminApprovalTablePro
                       </td>
 
                       <td className="px-6 py-4">
+                        <div className="space-y-1.5 min-w-[150px]">
+                          <div className="flex items-center justify-between gap-2">
+                            <span className="text-xs font-bold text-white">
+                              {activeCount} / {tableLimit} tables used
+                            </span>
+                            <button
+                              type="button"
+                              onClick={() => openTableLimitModal(restaurant)}
+                              className="text-[11px] font-semibold text-amber-400 hover:text-amber-300 underline underline-offset-2 cursor-pointer"
+                              title="Update allowed tables limit"
+                            >
+                              Edit
+                            </button>
+                          </div>
+                          <div className="w-full h-1.5 bg-slate-800 rounded-full overflow-hidden">
+                            <div
+                              className={`h-full transition-all duration-300 ${
+                                isOverLimit
+                                  ? "bg-rose-500"
+                                  : activeCount / Math.max(1, tableLimit) >= 0.8
+                                  ? "bg-amber-500"
+                                  : "bg-emerald-500"
+                              }`}
+                              style={{
+                                width: `${Math.min(
+                                  100,
+                                  Math.round((activeCount / Math.max(1, tableLimit)) * 100)
+                                )}%`,
+                              }}
+                            />
+                          </div>
+                          <div className="text-[10px] text-slate-400 flex items-center justify-between">
+                            <span>Total QR: {restaurant.totalTables ?? 0}</span>
+                            {isOverLimit ? (
+                              <span className="text-rose-400 font-semibold">Limit reached</span>
+                            ) : (
+                              <span className="text-slate-400">
+                                {Math.max(0, tableLimit - activeCount)} available
+                              </span>
+                            )}
+                          </div>
+                        </div>
+                      </td>
+
+                      <td className="px-6 py-4">
                         <div className="flex flex-col gap-1.5 items-start">
                           <ApprovalBadge status={restaurant.approvalStatus} />
                           <ActivationBadge isActive={restaurant.isActive} />
@@ -398,6 +530,17 @@ export function AdminApprovalTable({ initialRestaurants }: AdminApprovalTablePro
 
                       <td className="px-6 py-4 text-right">
                         <div className="flex items-center justify-end gap-2 flex-wrap">
+                          {/* Allowed Tables Limit Quick Action Button */}
+                          <button
+                            type="button"
+                            onClick={() => openTableLimitModal(restaurant)}
+                            className="px-3 py-1.5 rounded-lg text-xs font-semibold bg-purple-500/15 text-purple-300 border border-purple-500/30 hover:bg-purple-500/25 transition flex items-center gap-1 cursor-pointer"
+                            title="Set or update maximum allowed tables/QR codes"
+                          >
+                            <Layers className="w-3.5 h-3.5 text-purple-400" />
+                            <span>Allowed Tables</span>
+                          </button>
+
                           {/* Approval / Re-approval */}
                           {!isApproved && (
                             <button
@@ -631,17 +774,34 @@ export function AdminApprovalTable({ initialRestaurants }: AdminApprovalTablePro
                   </div>
                 </div>
 
-                <div>
-                  <label className="text-xs font-semibold text-slate-300 block mb-1">
-                    Currency
-                  </label>
-                  <input
-                    type="text"
-                    value={pricingCurrency}
-                    onChange={(e) => setPricingCurrency(e.target.value)}
-                    placeholder="INR"
-                    className="w-full px-3 py-2 rounded-xl text-xs bg-slate-950 border border-slate-800 text-white font-mono focus:outline-none focus:border-amber-400"
-                  />
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                  <div>
+                    <label className="text-xs font-semibold text-slate-300 block mb-1">
+                      Currency
+                    </label>
+                    <input
+                      type="text"
+                      value={pricingCurrency}
+                      onChange={(e) => setPricingCurrency(e.target.value)}
+                      placeholder="INR"
+                      className="w-full px-3 py-2 rounded-xl text-xs bg-slate-950 border border-slate-800 text-white font-mono focus:outline-none focus:border-amber-400"
+                    />
+                  </div>
+                  <div>
+                    <label className="text-xs font-semibold text-slate-300 block mb-1">
+                      Allowed Tables Limit <span className="text-amber-400">*</span>
+                    </label>
+                    <input
+                      type="number"
+                      min="1"
+                      max="10000"
+                      required
+                      value={pricingTableLimit}
+                      onChange={(e) => setPricingTableLimit(e.target.value)}
+                      placeholder="e.g. 10"
+                      className="w-full px-3 py-2 rounded-xl text-xs bg-slate-950 border border-slate-800 text-white font-mono focus:outline-none focus:border-amber-400"
+                    />
+                  </div>
                 </div>
 
                 <div className="flex items-center justify-end gap-3 pt-3 border-t border-slate-800">
@@ -662,6 +822,106 @@ export function AdminApprovalTable({ initialRestaurants }: AdminApprovalTablePro
                 </div>
               </form>
             )}
+          </div>
+        </div>
+      )}
+
+      {/* Dedicated Table Limit Management Modal */}
+      {tableLimitRestaurant && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/80 backdrop-blur-sm">
+          <div className="w-full max-w-md glass-card rounded-2xl p-6 border border-slate-800 space-y-4 shadow-2xl">
+            <div className="flex items-center justify-between border-b border-slate-800 pb-3">
+              <h3 className="text-lg font-bold text-white flex items-center gap-2">
+                <Layers className="w-5 h-5 text-purple-400" />
+                <span>Manage Allowed Tables Limit</span>
+              </h3>
+              <button
+                type="button"
+                onClick={() => setTableLimitRestaurant(null)}
+                className="text-slate-400 hover:text-white cursor-pointer"
+              >
+                ✕
+              </button>
+            </div>
+
+            <div className="text-xs text-slate-300 bg-slate-900/80 p-3 rounded-xl border border-slate-800 flex items-center justify-between">
+              <div>
+                <span className="text-slate-400 block text-[10px] uppercase font-semibold">Restaurant</span>
+                <strong className="text-white text-sm">{tableLimitRestaurant.name}</strong>
+              </div>
+              <div className="text-right">
+                <span className="text-slate-400 block text-[10px] uppercase font-semibold">Slug</span>
+                <span className="font-mono text-cyan-400">/r/{tableLimitRestaurant.slug}</span>
+              </div>
+            </div>
+
+            {/* Current Table Metrics */}
+            <div className="grid grid-cols-2 gap-3">
+              <div className="p-3 rounded-xl bg-slate-900/60 border border-slate-800">
+                <div className="text-[11px] text-slate-400">Current Active Tables</div>
+                <div className="text-xl font-bold text-white mt-1">
+                  {tableLimitRestaurant.activeTables ?? 0}
+                </div>
+              </div>
+              <div className="p-3 rounded-xl bg-slate-900/60 border border-slate-800">
+                <div className="text-[11px] text-slate-400">Total Registered Tables</div>
+                <div className="text-xl font-bold text-slate-300 mt-1">
+                  {tableLimitRestaurant.totalTables ?? 0}
+                </div>
+              </div>
+            </div>
+
+            {tableLimitError && (
+              <div className="p-3 rounded-xl bg-rose-500/10 border border-rose-500/20 text-rose-300 text-xs flex items-center gap-2">
+                <AlertCircle className="w-4 h-4 flex-shrink-0" />
+                <span>{tableLimitError}</span>
+              </div>
+            )}
+
+            {tableLimitSuccess && (
+              <div className="p-3 rounded-xl bg-emerald-500/10 border border-emerald-500/20 text-emerald-300 text-xs flex items-center gap-2">
+                <Check className="w-4 h-4 flex-shrink-0" />
+                <span>{tableLimitSuccess}</span>
+              </div>
+            )}
+
+            <form onSubmit={handleSaveTableLimit} className="space-y-4">
+              <div>
+                <label className="text-xs font-semibold text-slate-300 block mb-1">
+                  Allowed Tables (Maximum Active Tables / QR Codes) <span className="text-purple-400">*</span>
+                </label>
+                <input
+                  type="number"
+                  min="1"
+                  max="10000"
+                  required
+                  value={tableLimitInput}
+                  onChange={(e) => setTableLimitInput(e.target.value)}
+                  placeholder="e.g. 10"
+                  className="w-full px-3 py-2 rounded-xl text-sm bg-slate-950 border border-slate-800 text-white font-mono focus:outline-none focus:border-purple-400"
+                />
+                <p className="text-[11px] text-slate-400 mt-2 leading-relaxed">
+                  Controls the maximum active tables this restaurant can operate. Once this limit is reached, further table creation is blocked on both UI and server API. Existing tables and QR codes will continue working safely.
+                </p>
+              </div>
+
+              <div className="flex items-center justify-end gap-3 pt-3 border-t border-slate-800">
+                <button
+                  type="button"
+                  onClick={() => setTableLimitRestaurant(null)}
+                  className="px-4 py-2 rounded-xl text-xs font-semibold bg-slate-800 hover:bg-slate-700 text-slate-300 cursor-pointer"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  disabled={tableLimitSubmitting}
+                  className="px-5 py-2 rounded-xl text-xs font-bold bg-gradient-to-r from-purple-500 to-indigo-600 hover:from-purple-400 hover:to-indigo-500 text-white transition cursor-pointer shadow-md shadow-purple-500/20 disabled:opacity-50"
+                >
+                  {tableLimitSubmitting ? "Saving..." : "Update Allowed Limit"}
+                </button>
+              </div>
+            </form>
           </div>
         </div>
       )}

@@ -29,8 +29,13 @@ export default function AuthLayout({
 
       <div className="w-full max-w-md relative z-10">{children}</div>
 
-      <div className="mt-8 text-center text-xs text-slate-500 relative z-10">
-        Direct QR table ordering • Pay at counter • Zero subscription fees
+      <div className="mt-8 text-center text-xs text-slate-500 relative z-10 space-y-2">
+        <p>Direct QR table ordering • Pay at counter • Zero subscription fees</p>
+        <p>
+          <Link href="/terms" className="text-slate-400 hover:text-amber-400 underline underline-offset-2 transition">
+            Terms & Conditions
+          </Link>
+        </p>
       </div>
     </div>
   );

@@ -23,6 +23,12 @@ export const CreateOrderSchema = z.object({
     .max(100, "Invalid table token format.")
     .optional()
     .nullable(),
+  tableId: z
+    .string()
+    .trim()
+    .max(100, "Invalid table ID format.")
+    .optional()
+    .nullable(),
   tableNumber: z
     .string()
     .trim()

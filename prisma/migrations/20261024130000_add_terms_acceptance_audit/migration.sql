@@ -1,0 +1,7 @@
+-- AlterTable User
+ALTER TABLE "User" ADD COLUMN IF NOT EXISTS "termsAcceptedAt" TIMESTAMP(3);
+ALTER TABLE "User" ADD COLUMN IF NOT EXISTS "termsVersion" TEXT;
+
+-- AlterTable Restaurant
+ALTER TABLE "Restaurant" ADD COLUMN IF NOT EXISTS "termsAcceptedAt" TIMESTAMP(3);
+ALTER TABLE "Restaurant" ADD COLUMN IF NOT EXISTS "termsVersion" TEXT;

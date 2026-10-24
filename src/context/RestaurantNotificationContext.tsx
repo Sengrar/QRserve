@@ -187,7 +187,9 @@ export function RestaurantNotificationProvider({ restaurantId, children }: Provi
     if (!currentId || currentId === "new") return;
 
     try {
-      const res = await fetch(`/api/restaurants/${currentId}/service-requests?status=ALL`);
+      const res = await fetch(
+        `/api/restaurants/${currentId}/service-requests?status=PENDING&limit=25&includeStats=false`
+      );
       if (!res.ok) return;
 
       const json = await res.json();
@@ -204,7 +206,7 @@ export function RestaurantNotificationProvider({ restaurantId, children }: Provi
       }> = json.data.requests || [];
 
       const pendingList = requests.filter((r) => r.status === "PENDING");
-      setPendingCount(pendingList.length);
+      setPendingCount(json.data.stats?.pending ?? pendingList.length);
 
       // 1. Initial Load: populate known IDs without sound spam
       if (isFirstPollRef.current) {

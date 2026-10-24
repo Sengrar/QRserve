@@ -5,6 +5,7 @@ import { verifyOrderAccessToken } from "@/lib/orders";
 import { getSessionUser } from "@/lib/auth/session";
 import { verifyRestaurantAccess } from "@/lib/security/tenant";
 import { OrderConfirmationView } from "@/components/menu/OrderConfirmationView";
+import { calculateCombinedSessionBill, CombinedSessionBillData } from "@/lib/orders/session-billing";
 import { ShieldAlert } from "lucide-react";
 import Link from "next/link";
 
@@ -22,47 +23,52 @@ export default async function CustomerOrderConfirmationPage({
   const { slug, orderNumber } = await params;
   const { token, qr } = await searchParams;
 
-  const restaurant = await prisma.restaurant.findUnique({
-    where: { slug },
-    select: {
-      id: true,
-      name: true,
-      slug: true,
-      phone: true,
-      address: true,
-      gstEnabled: true,
-      gstin: true,
-      legalName: true,
-      taxRate: true,
-      taxMode: true,
-    },
-  });
-
-  if (!restaurant) {
-    notFound();
-  }
-
-  const order = await prisma.order.findUnique({
-    where: { orderNumber },
-    include: {
-      table: { select: { tableNumber: true, name: true } },
-      items: {
-        select: {
-          id: true,
-          itemName: true,
-          quantity: true,
-          unitPrice: true,
-          subtotal: true,
-          taxRate: true,
-          taxAmount: true,
-          taxableAmount: true,
-          notes: true,
+  const [restaurant, order] = await Promise.all([
+    prisma.restaurant.findUnique({
+      where: { slug },
+      select: {
+        id: true,
+        name: true,
+        slug: true,
+        phone: true,
+        address: true,
+        gstEnabled: true,
+        gstin: true,
+        legalName: true,
+        taxRate: true,
+        taxMode: true,
+      },
+    }),
+    prisma.order.findUnique({
+      where: { orderNumber },
+      include: {
+        table: { select: { id: true, tableNumber: true, name: true, qrToken: true } },
+        diningSession: {
+          select: {
+            id: true,
+            sessionCode: true,
+            status: true,
+            paymentStatus: true,
+          },
+        },
+        items: {
+          select: {
+            id: true,
+            itemName: true,
+            quantity: true,
+            unitPrice: true,
+            subtotal: true,
+            taxRate: true,
+            taxAmount: true,
+            taxableAmount: true,
+            notes: true,
+          },
         },
       },
-    },
-  });
+    }),
+  ]);
 
-  if (!order || order.restaurantId !== restaurant.id) {
+  if (!restaurant || !order || order.restaurantId !== restaurant.id) {
     notFound();
   }
 
@@ -102,6 +108,66 @@ export default async function CustomerOrderConfirmationPage({
     );
   }
 
+  // Fetch combined bill data server-side to eliminate client fetch delay and render running bill immediately
+  let initialBillData: CombinedSessionBillData | null = null;
+  const targetSessionId = order.diningSessionId;
+  const targetTableId = order.table?.id || order.tableId;
+
+  let sessionRecord = null;
+  if (targetSessionId) {
+    sessionRecord = await prisma.diningSession.findFirst({
+      where: {
+        id: targetSessionId,
+        restaurantId: restaurant.id,
+      },
+      include: {
+        table: { select: { id: true, tableNumber: true, name: true } },
+        orders: {
+          include: { items: true },
+          orderBy: { createdAt: "asc" },
+        },
+      },
+    });
+  } else if (targetTableId) {
+    sessionRecord = await prisma.diningSession.findFirst({
+      where: {
+        restaurantId: restaurant.id,
+        tableId: targetTableId,
+        status: "ACTIVE",
+        paymentStatus: "PENDING",
+      },
+      include: {
+        table: { select: { id: true, tableNumber: true, name: true } },
+        orders: {
+          include: { items: true },
+          orderBy: { createdAt: "asc" },
+        },
+      },
+      orderBy: { createdAt: "desc" },
+    });
+  }
+
+  if (sessionRecord && sessionRecord.orders.length > 0) {
+    initialBillData = calculateCombinedSessionBill({
+      session: sessionRecord,
+      restaurant: {
+        id: restaurant.id,
+        name: restaurant.name,
+        slug: restaurant.slug,
+        phone: restaurant.phone,
+        address: restaurant.address,
+        gstEnabled: restaurant.gstEnabled,
+        gstin: restaurant.gstin,
+        legalName: restaurant.legalName,
+        taxRate: Number(restaurant.taxRate),
+        taxMode: restaurant.taxMode,
+      },
+      orders: sessionRecord.orders,
+    });
+  }
+
+  const effectiveQr = qr || order.table?.qrToken || null;
+
   return (
     <OrderConfirmationView
       order={{
@@ -121,6 +187,7 @@ export default async function CustomerOrderConfirmationPage({
           ? {
               tableNumber: order.table.tableNumber,
               name: order.table.name,
+              qrToken: order.table.qrToken,
             }
           : null,
         restaurant: {
@@ -146,8 +213,9 @@ export default async function CustomerOrderConfirmationPage({
           notes: i.notes,
         })),
       }}
-      qrToken={qr || null}
+      qrToken={effectiveQr}
       orderAccessToken={token || null}
+      initialCombinedBillData={initialBillData}
     />
   );
 }

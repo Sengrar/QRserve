@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 import { requireSuperAdmin } from "@/lib/security/tenant";
 import { UpdateRestaurantStatusByAdminSchema } from "@/lib/validations/restaurant";
 import { prisma } from "@/lib/db/prisma";
-import { ApprovalStatus } from "@prisma/client";
+import { ApprovalStatus, SubscriptionPlan, SubscriptionStatus } from "@prisma/client";
 
 export const dynamic = "force-dynamic";
 
@@ -12,7 +12,7 @@ interface RouteContext {
 
 export async function PATCH(request: Request, context: RouteContext) {
   try {
-    await requireSuperAdmin();
+    const adminUser = await requireSuperAdmin();
     const { id } = await context.params;
 
     const json = await request.json();
@@ -31,13 +31,22 @@ export async function PATCH(request: Request, context: RouteContext) {
 
     const restaurant = await prisma.restaurant.findUnique({
       where: { id },
+      include: {
+        subscription: true,
+        _count: {
+          select: { tables: true },
+        },
+        tables: {
+          select: { id: true, isActive: true },
+        },
+      },
     });
 
     if (!restaurant) {
       return NextResponse.json({ success: false, error: "Restaurant not found." }, { status: 404 });
     }
 
-    const { approvalStatus, rejectionReason, isSuspended } = result.data;
+    const { approvalStatus, rejectionReason, isSuspended, tableLimit } = result.data;
 
     const dataToUpdate: {
       approvalStatus?: ApprovalStatus;
@@ -60,14 +69,67 @@ export async function PATCH(request: Request, context: RouteContext) {
       dataToUpdate.isSuspended = isSuspended;
     }
 
-    const updated = await prisma.restaurant.update({
-      where: { id },
-      data: dataToUpdate,
-    });
+    let updatedSubscription = restaurant.subscription;
+
+    if (tableLimit !== undefined) {
+      const auditNote = `[${new Date().toISOString()} by ${adminUser.name}]: Super Admin updated Allowed Tables limit to ${tableLimit}`;
+      const combinedNotes = restaurant.subscription?.notes
+        ? `${restaurant.subscription.notes}\n${auditNote}`
+        : auditNote;
+
+      updatedSubscription = await prisma.subscription.upsert({
+        where: { restaurantId: id },
+        create: {
+          restaurantId: id,
+          plan: SubscriptionPlan.SMALL,
+          status: SubscriptionStatus.ACTIVE,
+          tableLimit,
+          amount: 0,
+          amountPaise: 0,
+          startDate: new Date(),
+          endDate: new Date(Date.now() + 365 * 24 * 60 * 60 * 1000),
+          notes: combinedNotes,
+        },
+        update: {
+          tableLimit,
+          notes: combinedNotes,
+        },
+      });
+    }
+
+    let updatedRestaurant = restaurant;
+    if (Object.keys(dataToUpdate).length > 0) {
+      updatedRestaurant = await prisma.restaurant.update({
+        where: { id },
+        data: dataToUpdate,
+        include: {
+          subscription: true,
+          _count: {
+            select: { tables: true },
+          },
+          tables: {
+            select: { id: true, isActive: true },
+          },
+        },
+      });
+    }
+
+    const effectiveLimit = updatedSubscription?.tableLimit ?? restaurant.subscription?.tableLimit ?? 10;
+    const totalTables = restaurant._count.tables;
+    const activeTables = restaurant.tables.filter((t) => t.isActive).length;
 
     return NextResponse.json({
       success: true,
-      data: updated,
+      message: tableLimit !== undefined
+        ? `Allowed tables updated to ${effectiveLimit} for ${restaurant.name}.`
+        : "Restaurant updated successfully.",
+      data: {
+        ...updatedRestaurant,
+        tableLimit: effectiveLimit,
+        totalTables,
+        activeTables,
+        subscription: updatedSubscription,
+      },
     });
   } catch (error) {
     if (error instanceof Error && (error.name === "AuthenticationError" || error.name === "AuthorizationError")) {

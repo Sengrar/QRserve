@@ -33,19 +33,6 @@ export default async function RestaurantAnalyticsPage({
     redirect("/dashboard");
   }
 
-  const restaurant = await prisma.restaurant.findUnique({
-    where: { id: restaurantId },
-    select: {
-      id: true,
-      name: true,
-      slug: true,
-    },
-  });
-
-  if (!restaurant) {
-    notFound();
-  }
-
   const validPreset: AnalyticsDatePreset =
     preset &&
     [
@@ -61,12 +48,26 @@ export default async function RestaurantAnalyticsPage({
       ? (preset.toLowerCase() as AnalyticsDatePreset)
       : "last7days";
 
-  const initialData = await getRestaurantOrderAnalytics(
-    restaurant.id,
-    validPreset,
-    startDate,
-    endDate
-  );
+  const [restaurant, initialData] = await Promise.all([
+    prisma.restaurant.findUnique({
+      where: { id: restaurantId },
+      select: {
+        id: true,
+        name: true,
+        slug: true,
+      },
+    }),
+    getRestaurantOrderAnalytics(
+      restaurantId,
+      validPreset,
+      startDate,
+      endDate
+    ),
+  ]);
+
+  if (!restaurant) {
+    notFound();
+  }
 
   return (
     <RestaurantOrderAnalytics

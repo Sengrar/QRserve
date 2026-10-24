@@ -27,17 +27,25 @@ export class SubscriptionRequiredError extends Error {
  * Server-side guard to strictly enforce table creation limits.
  * Cannot be bypassed via direct API manipulation.
  *
+/**
+ * Server-side guard to strictly enforce table creation limits.
+ * Cannot be bypassed via direct API manipulation.
+ *
  * Safe Policy:
  * - Existing tables and their QR tokens are NEVER deleted or dropped on downgrade/expiry.
  * - Adding NEW active tables is blocked if active count >= subscribed limit or if subscription is expired.
  */
-export async function assertCanAddTable(restaurantId: string): Promise<{
+export async function assertCanAddTable(
+  restaurantId: string,
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  dbClient: any = prisma
+): Promise<{
   allowed: boolean;
   currentActiveCount: number;
   tableLimit: number;
   plan: string;
 }> {
-  const subscription = await prisma.subscription.findUnique({
+  const subscription = await dbClient.subscription.findUnique({
     where: { restaurantId },
   });
 
@@ -45,7 +53,7 @@ export async function assertCanAddTable(restaurantId: string): Promise<{
 
   if (!evaluation.hasSubscription) {
     throw new SubscriptionRequiredError(
-      "No subscription found. Please subscribe to a monthly plan to create and manage tables."
+      "No subscription found. Please subscribe to a monthly plan or contact administration to set your allowed tables."
     );
   }
 
@@ -61,7 +69,7 @@ export async function assertCanAddTable(restaurantId: string): Promise<{
     );
   }
 
-  const currentActiveCount = await prisma.table.count({
+  const currentActiveCount = await dbClient.table.count({
     where: {
       restaurantId,
       isActive: true,
@@ -70,7 +78,7 @@ export async function assertCanAddTable(restaurantId: string): Promise<{
 
   if (currentActiveCount >= evaluation.tableLimit) {
     throw new TableLimitExceededError(
-      `Table limit reached. Your ${evaluation.plan} plan allows up to ${evaluation.tableLimit} active tables (currently using ${currentActiveCount}). Upgrade your plan or deactivate unused tables.`,
+      `Table limit reached. Your ${evaluation.plan} plan allows up to ${evaluation.tableLimit} active tables (${currentActiveCount} / ${evaluation.tableLimit} tables used). This restaurant has reached its allowed table limit. Upgrade your plan or contact administration to increase your allowed table limit.`,
       currentActiveCount,
       evaluation.tableLimit
     );
@@ -86,18 +94,35 @@ export async function assertCanAddTable(restaurantId: string): Promise<{
 
 /**
  * Checks table usage metrics for a restaurant.
+ * Optionally accepts pre-computed counts to avoid redundant database round-trips.
  */
-export async function getTableUsageMetrics(restaurantId: string) {
-  const subscription = await prisma.subscription.findUnique({
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export async function getTableUsageMetrics(
+  restaurantId: string,
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  dbClient: any = prisma,
+  knownCounts?: { totalTables?: number; activeTables?: number }
+) {
+  const subscription = await dbClient.subscription.findUnique({
     where: { restaurantId },
   });
 
   const evaluation = evaluateSubscriptionStatus(subscription);
 
-  const [totalCount, activeCount] = await Promise.all([
-    prisma.table.count({ where: { restaurantId } }),
-    prisma.table.count({ where: { restaurantId, isActive: true } }),
-  ]);
+  let totalCount: number;
+  let activeCount: number;
+
+  if (knownCounts?.totalTables !== undefined && knownCounts?.activeTables !== undefined) {
+    totalCount = knownCounts.totalTables;
+    activeCount = knownCounts.activeTables;
+  } else {
+    const [t, a] = await Promise.all([
+      dbClient.table.count({ where: { restaurantId } }),
+      dbClient.table.count({ where: { restaurantId, isActive: true } }),
+    ]);
+    totalCount = t;
+    activeCount = a;
+  }
 
   return {
     subscription: evaluation,

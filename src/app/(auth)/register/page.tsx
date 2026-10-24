@@ -12,6 +12,7 @@ export default function RegisterPage() {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [showPassword, setShowPassword] = useState(false);
+  const [agreedToTerms, setAgreedToTerms] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
 
@@ -24,13 +25,18 @@ export default function RegisterPage() {
       return;
     }
 
+    if (!agreedToTerms) {
+      setError("You must read and agree to the Terms & Conditions to register.");
+      return;
+    }
+
     setLoading(true);
 
     try {
       const res = await fetch("/api/auth/register", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ name, email, password }),
+        body: JSON.stringify({ name, email, password, agreedToTerms }),
       });
 
       const data = await res.json();
@@ -127,9 +133,34 @@ export default function RegisterPage() {
           </div>
         </div>
 
+        <div className="pt-2">
+          <label className="flex items-start gap-2.5 text-xs text-slate-300 cursor-pointer select-none">
+            <input
+              type="checkbox"
+              id="register-terms-checkbox"
+              checked={agreedToTerms}
+              onChange={(e) => setAgreedToTerms(e.target.checked)}
+              className="mt-0.5 w-4 h-4 rounded border-slate-700 bg-slate-900/80 text-amber-500 focus:ring-amber-500/40 focus:ring-offset-0 focus:outline-none cursor-pointer accent-amber-500"
+            />
+            <span className="leading-relaxed">
+              I have read, understood, and agree to the{" "}
+              <Link
+                href="/terms"
+                target="_blank"
+                rel="noopener noreferrer"
+                className="text-amber-400 hover:text-amber-300 underline underline-offset-2 transition"
+                onClick={(e) => e.stopPropagation()}
+              >
+                Terms & Conditions
+              </Link>
+              , including the counter payment and responsibility policies.
+            </span>
+          </label>
+        </div>
+
         <button
           type="submit"
-          disabled={loading}
+          disabled={loading || !agreedToTerms}
           className="w-full mt-2 py-3 px-4 rounded-xl font-semibold text-sm text-slate-950 bg-gradient-to-r from-amber-400 to-orange-500 hover:from-amber-300 hover:to-orange-400 focus:outline-none focus:ring-2 focus:ring-amber-500/40 transition flex items-center justify-center gap-2 shadow-lg shadow-amber-500/20 disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer"
         >
           {loading ? (

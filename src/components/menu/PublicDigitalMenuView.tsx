@@ -27,8 +27,23 @@ import {
   Copy,
   Star,
 } from "lucide-react";
-import { CustomerOrderReceiptModal, CustomerReceiptData } from "./CustomerOrderReceiptModal";
-import { CustomerServiceRequestModal } from "./CustomerServiceRequestModal";
+import dynamic from "next/dynamic";
+import type { CustomerReceiptData } from "./CustomerOrderReceiptModal";
+
+const CustomerOrderReceiptModal = dynamic(
+  () => import("./CustomerOrderReceiptModal").then((mod) => mod.CustomerOrderReceiptModal),
+  { ssr: false }
+);
+
+const CustomerServiceRequestModal = dynamic(
+  () => import("./CustomerServiceRequestModal").then((mod) => mod.CustomerServiceRequestModal),
+  { ssr: false }
+);
+
+const CombinedBillReceiptModal = dynamic(
+  () => import("@/components/orders/CombinedBillReceiptModal").then((mod) => mod.CombinedBillReceiptModal),
+  { ssr: false }
+);
 
 
 interface MenuItemData {
@@ -121,7 +136,13 @@ export function PublicDigitalMenuView({
   const [activeNoteItemId, setActiveNoteItemId] = useState<string | null>(null);
   const [itemNoteText, setItemNoteText] = useState("");
 
+  const [activeTableNumber, setActiveTableNumber] = useState<string | null>(tableNumber || null);
+  const [activeTableName, setActiveTableName] = useState<string | null>(tableName || null);
+  const [activeQrToken, setActiveQrToken] = useState<string | null>(qrToken || null);
+
   const [isReceiptModalOpen, setIsReceiptModalOpen] = useState(false);
+  const [isCombinedBillOpen, setIsCombinedBillOpen] = useState(false);
+  const [combinedBillData, setCombinedBillData] = useState<any>(null);
   const [receiptData, setReceiptData] = useState<CustomerReceiptData | null>(null);
   const [receiptLoading, setReceiptLoading] = useState(false);
   const [receiptError, setReceiptError] = useState<string | null>(null);
@@ -182,11 +203,40 @@ export function PublicDigitalMenuView({
       setIsClientMounted(true);
 
       try {
+        // If table props are present, persist them in storage
+        if (tableNumber || qrToken) {
+          sessionStorage.setItem(
+            `qrserve_table_${restaurant.slug}`,
+            JSON.stringify({
+              tableNumber: tableNumber || null,
+              tableName: tableName || null,
+              qrToken: qrToken || null,
+            })
+          );
+        } else {
+          // If no table props from URL, try to restore from active table session
+          const savedTable = sessionStorage.getItem(`qrserve_table_${restaurant.slug}`);
+          if (savedTable) {
+            const parsedTable = JSON.parse(savedTable);
+            if (parsedTable?.tableNumber) {
+              setActiveTableNumber(parsedTable.tableNumber);
+              if (parsedTable.tableName) setActiveTableName(parsedTable.tableName);
+              if (parsedTable.qrToken) setActiveQrToken(parsedTable.qrToken);
+            }
+          }
+        }
+
         const savedSession = sessionStorage.getItem(`qrserve_active_order_${restaurant.slug}`);
         if (savedSession) {
           const parsed = JSON.parse(savedSession);
           if (parsed?.orderNumber && parsed?.accessToken) {
             setActiveOrderSession(parsed);
+            if (!tableNumber && parsed.tableNumber) {
+              setActiveTableNumber(parsed.tableNumber);
+            }
+            if (!qrToken && parsed.qrToken) {
+              setActiveQrToken(parsed.qrToken);
+            }
           }
         }
       } catch {
@@ -231,6 +281,35 @@ export function PublicDigitalMenuView({
   }, [restaurant.slug, storageKey, restaurant.categories]);
 
   async function handleFetchAndOpenReceipt() {
+    // If table context or active session exists, prefer loading the combined running bill
+    const effQr = activeQrToken || qrToken;
+    const effTbl = activeTableNumber || tableNumber;
+
+    if (effQr || effTbl || activeOrderSession?.orderNumber) {
+      setReceiptLoading(true);
+      setReceiptError(null);
+      try {
+        const query = effQr
+          ? `qr=${encodeURIComponent(effQr)}`
+          : effTbl
+          ? `table=${encodeURIComponent(effTbl)}`
+          : `orderNumber=${encodeURIComponent(activeOrderSession!.orderNumber)}`;
+
+        const res = await fetch(`/api/r/${restaurant.slug}/bill?${query}`);
+        if (res.ok) {
+          const json = await res.json();
+          if (json.success && json.data) {
+            setCombinedBillData(json.data);
+            setIsCombinedBillOpen(true);
+            setReceiptLoading(false);
+            return;
+          }
+        }
+      } catch {
+        // fallback to individual order receipt
+      }
+    }
+
     if (!activeOrderSession) return;
     setIsReceiptModalOpen(true);
     setReceiptLoading(true);
@@ -549,9 +628,12 @@ export function PublicDigitalMenuView({
     const idempotencyKey = `ord_idem_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
 
     try {
+      const effectiveTableNumber = activeTableNumber || tableNumber || null;
+      const effectiveQrToken = activeQrToken || qrToken || null;
+
       const payload = {
-        qrToken: qrToken || null,
-        tableNumber: tableNumber || null,
+        qrToken: effectiveQrToken,
+        tableNumber: effectiveTableNumber,
         customerNotes: orderNotes.trim() || null,
         couponCode: appliedCoupon?.code || null,
         customerPhone: customerPhoneInput.trim() || null,
@@ -588,27 +670,38 @@ export function PublicDigitalMenuView({
       setIsCartOpen(false);
       setConfirmDialog(false);
 
+      const navUrl =
+        json.data.confirmationUrl ||
+        `/r/${restaurant.slug}/orders/${json.data.orderNumber}?token=${json.data.accessToken}${
+          effectiveQrToken ? `&qr=${encodeURIComponent(effectiveQrToken)}` : effectiveTableNumber ? `&table=${encodeURIComponent(effectiveTableNumber)}` : ""
+        }`;
+
       const sessionOrder = {
         orderNumber: json.data.orderNumber,
         accessToken: json.data.accessToken,
-        confirmationUrl:
-          json.data.confirmationUrl ||
-          `/r/${restaurant.slug}/orders/${json.data.orderNumber}?token=${json.data.accessToken}`,
+        tableNumber: effectiveTableNumber,
+        qrToken: effectiveQrToken,
+        confirmationUrl: navUrl,
       };
+
       try {
         sessionStorage.setItem(`qrserve_active_order_${restaurant.slug}`, JSON.stringify(sessionOrder));
+        if (effectiveTableNumber) {
+          sessionStorage.setItem(
+            `qrserve_table_${restaurant.slug}`,
+            JSON.stringify({
+              tableNumber: effectiveTableNumber,
+              tableName: activeTableName || tableName || null,
+              qrToken: effectiveQrToken,
+            })
+          );
+        }
       } catch {
         // Ignore write errors
       }
       setActiveOrderSession(sessionOrder);
 
-      if (json.data?.confirmationUrl) {
-        router.push(json.data.confirmationUrl);
-      } else {
-        router.push(
-          `/r/${restaurant.slug}/orders/${json.data.orderNumber}?token=${json.data.accessToken}`
-        );
-      }
+      router.push(navUrl);
     } catch (err) {
       console.error("Order submission failed:", err);
       setSubmitError("Network error. Please verify your connection and try again.");
@@ -650,10 +743,18 @@ export function PublicDigitalMenuView({
             <div className="flex items-center gap-2 min-w-0">
               <Receipt className="w-4 h-4 text-amber-400 flex-shrink-0" />
               <span className="text-slate-300 truncate">
-                Recent Order:{" "}
-                <strong className="font-mono text-amber-300 font-bold tracking-wider">
-                  {activeOrderSession.orderNumber}
-                </strong>
+                {activeTableNumber || tableNumber ? (
+                  <>
+                    Table <strong className="font-bold text-amber-300">#{activeTableNumber || tableNumber}</strong> Running Bill
+                  </>
+                ) : (
+                  <>
+                    Recent Order:{" "}
+                    <strong className="font-mono text-amber-300 font-bold tracking-wider">
+                      {activeOrderSession.orderNumber}
+                    </strong>
+                  </>
+                )}
               </span>
             </div>
             <div className="flex items-center gap-2 flex-shrink-0">
@@ -664,7 +765,7 @@ export function PublicDigitalMenuView({
                 className="px-3 py-1.5 rounded-lg bg-gradient-to-r from-amber-400 to-orange-500 hover:from-amber-300 hover:to-orange-400 text-slate-950 font-bold text-xs shadow-md transition flex items-center gap-1.5 cursor-pointer"
               >
                 <Receipt className="w-3.5 h-3.5" />
-                <span>View Receipt</span>
+                <span>{activeTableNumber || tableNumber ? "View Running Bill" : "View Receipt"}</span>
               </button>
               <button
                 type="button"
@@ -1626,11 +1727,21 @@ export function PublicDigitalMenuView({
           onClose={() => setServiceModalOpen(false)}
           restaurantSlug={restaurant.slug}
           restaurantName={restaurant.name}
-          tableNumber={tableNumber}
-          tableName={tableName}
-          qrToken={qrToken}
+          tableNumber={activeTableNumber || tableNumber}
+          tableName={activeTableName || tableName}
+          qrToken={activeQrToken || qrToken}
         />
       )}
+
+      {/* Combined Table Bill / Running Receipt Modal */}
+      <CombinedBillReceiptModal
+        isOpen={isCombinedBillOpen}
+        onClose={() => setIsCombinedBillOpen(false)}
+        billData={combinedBillData}
+        isLoading={receiptLoading}
+        error={receiptError}
+        isStaffMode={false}
+      />
 
       {/* Toast Notification when coupon code is copied */}
       {offerCopiedToast && (

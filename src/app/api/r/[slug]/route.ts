@@ -144,6 +144,11 @@ export async function GET(_request: Request, context: RouteContext) {
           })),
         })),
       },
+    },
+    {
+      headers: {
+        "Cache-Control": "public, s-maxage=10, stale-while-revalidate=60",
+      },
     });
   } catch (error) {
     console.error("GET /api/r/[slug] error:", error);

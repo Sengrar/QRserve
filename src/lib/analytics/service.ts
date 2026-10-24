@@ -277,23 +277,44 @@ async function buildChartBuckets(
   monthly: ChartDataPoint[];
   yearly: ChartDataPoint[];
 }> {
-  // 1. Fetch raw order points within filter range for daily chart
-  const filteredOrders = await prisma.order.findMany({
-    where: {
-      restaurantId,
-      createdAt: {
-        gte: filterRange.startDate,
-        lte: filterRange.endDate,
+  const now = getZonedDateParts(referenceDate);
+  const endOfYear = createZonedEndOfDay(now.year, 12, 31);
+  const pastYears = [now.year - 2, now.year - 1, now.year];
+  const startOfHistorical = createZonedStartOfDay(pastYears[0], 1, 1);
+
+  // Parallelize filtered range orders and historical orders (historical covers the past 3 years including current year)
+  const [filteredOrders, historicalOrders] = await Promise.all([
+    prisma.order.findMany({
+      where: {
+        restaurantId,
+        createdAt: {
+          gte: filterRange.startDate,
+          lte: filterRange.endDate,
+        },
       },
-    },
-    select: {
-      id: true,
-      status: true,
-      totalAmount: true,
-      createdAt: true,
-    },
-    orderBy: { createdAt: "asc" },
-  });
+      select: {
+        id: true,
+        status: true,
+        totalAmount: true,
+        createdAt: true,
+      },
+      orderBy: { createdAt: "asc" },
+    }),
+    prisma.order.findMany({
+      where: {
+        restaurantId,
+        createdAt: {
+          gte: startOfHistorical,
+          lte: endOfYear,
+        },
+      },
+      select: {
+        status: true,
+        totalAmount: true,
+        createdAt: true,
+      },
+    }),
+  ]);
 
   const dailyMap = new Map<string, ChartDataPoint>();
 
@@ -363,26 +384,7 @@ async function buildChartBuckets(
 
   const daily = Array.from(dailyMap.values()).sort((a, b) => a.key.localeCompare(b.key));
 
-  // 2. Monthly chart: All months of current year
-  const now = getZonedDateParts(referenceDate);
-  const startOfYear = createZonedStartOfDay(now.year, 1, 1);
-  const endOfYear = createZonedEndOfDay(now.year, 12, 31);
-
-  const yearOrders = await prisma.order.findMany({
-    where: {
-      restaurantId,
-      createdAt: {
-        gte: startOfYear,
-        lte: endOfYear,
-      },
-    },
-    select: {
-      status: true,
-      totalAmount: true,
-      createdAt: true,
-    },
-  });
-
+  // 2. Monthly chart: All months of current year (computed from historicalOrders)
   const monthNames = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
   const monthlyMap = new Map<string, ChartDataPoint>();
 
@@ -402,49 +404,7 @@ async function buildChartBuckets(
     });
   }
 
-  for (const o of yearOrders) {
-    const parts = getZonedDateParts(o.createdAt);
-    const key = `${parts.year}-${parts.month < 10 ? `0${parts.month}` : parts.month}`;
-    const point = monthlyMap.get(key);
-    if (point) {
-      point.orderCount += 1;
-      const amount = Number(o.totalAmount);
-      if (o.status !== OrderStatus.CANCELLED) {
-        point.sales = Number((point.sales + amount).toFixed(2));
-        point.totalOrderValue = point.sales;
-        point.revenue = point.sales;
-      } else {
-        point.cancelledCount += 1;
-      }
-      if (o.status === OrderStatus.COMPLETED) {
-        point.completedSales = Number((point.completedSales + amount).toFixed(2));
-        point.completedOrderValue = point.completedSales;
-        point.completedRevenue = point.completedSales;
-      }
-    }
-  }
-
-  const monthly = Array.from(monthlyMap.values());
-
-  // 3. Yearly chart: Past 3 years
-  const pastYears = [now.year - 2, now.year - 1, now.year];
-  const startOfHistorical = createZonedStartOfDay(pastYears[0], 1, 1);
-
-  const historicalOrders = await prisma.order.findMany({
-    where: {
-      restaurantId,
-      createdAt: {
-        gte: startOfHistorical,
-        lte: endOfYear,
-      },
-    },
-    select: {
-      status: true,
-      totalAmount: true,
-      createdAt: true,
-    },
-  });
-
+  // 3. Yearly chart: Past 3 years (computed from historicalOrders)
   const yearlyMap = new Map<string, ChartDataPoint>();
   for (const yr of pastYears) {
     yearlyMap.set(yr.toString(), {
@@ -463,25 +423,49 @@ async function buildChartBuckets(
 
   for (const o of historicalOrders) {
     const parts = getZonedDateParts(o.createdAt);
-    const point = yearlyMap.get(parts.year.toString());
-    if (point) {
-      point.orderCount += 1;
-      const amount = Number(o.totalAmount);
+    const amount = Number(o.totalAmount);
+
+    // Update monthly map if within current year
+    if (parts.year === now.year) {
+      const monthKey = `${parts.year}-${parts.month < 10 ? `0${parts.month}` : parts.month}`;
+      const mPoint = monthlyMap.get(monthKey);
+      if (mPoint) {
+        mPoint.orderCount += 1;
+        if (o.status !== OrderStatus.CANCELLED) {
+          mPoint.sales = Number((mPoint.sales + amount).toFixed(2));
+          mPoint.totalOrderValue = mPoint.sales;
+          mPoint.revenue = mPoint.sales;
+        } else {
+          mPoint.cancelledCount += 1;
+        }
+        if (o.status === OrderStatus.COMPLETED) {
+          mPoint.completedSales = Number((mPoint.completedSales + amount).toFixed(2));
+          mPoint.completedOrderValue = mPoint.completedSales;
+          mPoint.completedRevenue = mPoint.completedSales;
+        }
+      }
+    }
+
+    // Update yearly map
+    const yPoint = yearlyMap.get(parts.year.toString());
+    if (yPoint) {
+      yPoint.orderCount += 1;
       if (o.status !== OrderStatus.CANCELLED) {
-        point.sales = Number((point.sales + amount).toFixed(2));
-        point.totalOrderValue = point.sales;
-        point.revenue = point.sales;
+        yPoint.sales = Number((yPoint.sales + amount).toFixed(2));
+        yPoint.totalOrderValue = yPoint.sales;
+        yPoint.revenue = yPoint.sales;
       } else {
-        point.cancelledCount += 1;
+        yPoint.cancelledCount += 1;
       }
       if (o.status === OrderStatus.COMPLETED) {
-        point.completedSales = Number((point.completedSales + amount).toFixed(2));
-        point.completedOrderValue = point.completedSales;
-        point.completedRevenue = point.completedSales;
+        yPoint.completedSales = Number((yPoint.completedSales + amount).toFixed(2));
+        yPoint.completedOrderValue = yPoint.completedSales;
+        yPoint.completedRevenue = yPoint.completedSales;
       }
     }
   }
 
+  const monthly = Array.from(monthlyMap.values());
   const yearly = Array.from(yearlyMap.values());
 
   return { daily, monthly, yearly };
