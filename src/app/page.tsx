@@ -156,8 +156,21 @@ export default function HomePage() {
       </main>
 
       {/* Footer */}
-      <footer className="border-t border-slate-900 py-8 px-4 text-center text-xs text-slate-500">
-        QRServe Multi-Tenant Digital QR Platform • Phase 1 Foundation
+      <footer className="border-t border-slate-900 py-8 px-4 text-xs text-slate-500">
+        <div className="max-w-7xl mx-auto flex flex-col sm:flex-row items-center justify-between gap-4">
+          <p>QRServe Multi-Tenant Digital QR Platform • Direct Table Ordering & Counter Billing</p>
+          <div className="flex items-center gap-6">
+            <Link href="/terms" className="hover:text-amber-400 transition">
+              Terms & Conditions
+            </Link>
+            <Link href="/login" className="hover:text-slate-300 transition">
+              Dashboard Login
+            </Link>
+            <Link href="/register" className="hover:text-slate-300 transition">
+              Register
+            </Link>
+          </div>
+        </div>
       </footer>
     </div>
   );

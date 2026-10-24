@@ -18,6 +18,11 @@ export const RegisterSchema = z.object({
     .max(100, { message: "Password must be less than 100 characters" })
     .regex(/[A-Za-z]/, { message: "Password must contain at least one letter" })
     .regex(/[0-9]/, { message: "Password must contain at least one number" }),
+  agreedToTerms: z
+    .boolean({ message: "You must agree to the Terms & Conditions" })
+    .refine((val) => val === true, {
+      message: "You must agree to the Terms & Conditions",
+    }),
 });
 
 export const LoginSchema = z.object({

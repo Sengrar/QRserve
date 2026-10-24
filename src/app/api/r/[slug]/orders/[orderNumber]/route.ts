@@ -138,6 +138,11 @@ export async function GET(request: Request, context: RouteContext) {
           notes: i.notes,
         })),
       },
+    },
+    {
+      headers: {
+        "Cache-Control": "private, no-cache, no-store, must-revalidate",
+      },
     });
   } catch (error) {
     console.error("GET /api/r/[slug]/orders/[orderNumber] error:", error);

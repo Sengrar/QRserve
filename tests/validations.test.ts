@@ -9,13 +9,26 @@ import { ApprovalStatus } from "@prisma/client";
 
 describe("Input Validation Tests", () => {
   describe("RegisterSchema", () => {
-    it("accepts valid registration payload", () => {
+    it("accepts valid registration payload with agreedToTerms: true", () => {
+      const result = RegisterSchema.safeParse({
+        name: "Luigi Mario",
+        email: "luigi@trattoria.com",
+        password: "SecurePassword123!",
+        agreedToTerms: true,
+      });
+      expect(result.success).toBe(true);
+    });
+
+    it("rejects registration when agreedToTerms is missing", () => {
       const result = RegisterSchema.safeParse({
         name: "Luigi Mario",
         email: "luigi@trattoria.com",
         password: "SecurePassword123!",
       });
-      expect(result.success).toBe(true);
+      expect(result.success).toBe(false);
+      if (!result.success) {
+        expect(result.error.flatten().fieldErrors.agreedToTerms).toBeDefined();
+      }
     });
 
     it("rejects weak password with fewer than 8 characters", () => {
@@ -23,6 +36,7 @@ describe("Input Validation Tests", () => {
         name: "Luigi Mario",
         email: "luigi@trattoria.com",
         password: "pass1",
+        agreedToTerms: true,
       });
       expect(result.success).toBe(false);
       if (!result.success) {
@@ -35,6 +49,7 @@ describe("Input Validation Tests", () => {
         name: "Luigi Mario",
         email: "luigi@trattoria.com",
         password: "OnlyLettersPassword",
+        agreedToTerms: true,
       });
       expect(result.success).toBe(false);
     });
@@ -44,6 +59,7 @@ describe("Input Validation Tests", () => {
         name: "Luigi Mario",
         email: "not-an-email",
         password: "SecurePassword123!",
+        agreedToTerms: true,
       });
       expect(result.success).toBe(false);
       if (!result.success) {
@@ -56,6 +72,7 @@ describe("Input Validation Tests", () => {
         name: "Luigi Mario",
         email: "luigi@trattoria.com",
         password: "SecurePassword123!",
+        agreedToTerms: true,
         role: "SUPER_ADMIN",
         approvalStatus: "APPROVED",
         isActive: true,
@@ -66,6 +83,32 @@ describe("Input Validation Tests", () => {
         expect((result.data as Record<string, unknown>).role).toBeUndefined();
         expect((result.data as Record<string, unknown>).approvalStatus).toBeUndefined();
         expect((result.data as Record<string, unknown>).isActive).toBeUndefined();
+      }
+    });
+
+    it("accepts registration when agreedToTerms is explicitly true", () => {
+      const result = RegisterSchema.safeParse({
+        name: "Luigi Mario",
+        email: "luigi@trattoria.com",
+        password: "SecurePassword123!",
+        agreedToTerms: true,
+      });
+      expect(result.success).toBe(true);
+      if (result.success) {
+        expect(result.data.agreedToTerms).toBe(true);
+      }
+    });
+
+    it("rejects registration when agreedToTerms is explicitly false", () => {
+      const result = RegisterSchema.safeParse({
+        name: "Luigi Mario",
+        email: "luigi@trattoria.com",
+        password: "SecurePassword123!",
+        agreedToTerms: false,
+      });
+      expect(result.success).toBe(false);
+      if (!result.success) {
+        expect(result.error.flatten().fieldErrors.agreedToTerms).toBeDefined();
       }
     });
   });
@@ -89,7 +132,7 @@ describe("Input Validation Tests", () => {
   });
 
   describe("CreateRestaurantSchema", () => {
-    it("accepts valid restaurant registration", () => {
+    it("accepts valid restaurant registration with agreedToTerms: true", () => {
       const result = CreateRestaurantSchema.safeParse({
         name: "Trattoria Da Luigi",
         slug: "trattoria-da-luigi",
@@ -98,8 +141,21 @@ describe("Input Validation Tests", () => {
         email: "contact@daluigi.com",
         address: "42 Rome Way",
         googleReviewUrl: "https://g.page/r/sample-review",
+        agreedToTerms: true,
       });
       expect(result.success).toBe(true);
+    });
+
+    it("rejects restaurant creation when agreedToTerms is missing", () => {
+      const result = CreateRestaurantSchema.safeParse({
+        name: "Trattoria Da Luigi",
+        slug: "trattoria-da-luigi",
+        description: "Fresh pasta and woodfired pizza",
+      });
+      expect(result.success).toBe(false);
+      if (!result.success) {
+        expect(result.error.flatten().fieldErrors.agreedToTerms).toBeDefined();
+      }
     });
 
     it("rejects invalid slug with uppercase letters or special symbols", () => {
@@ -116,6 +172,30 @@ describe("Input Validation Tests", () => {
         slug: "valid-slug",
       });
       expect(result.success).toBe(false);
+    });
+
+    it("accepts restaurant creation when agreedToTerms is explicitly true", () => {
+      const result = CreateRestaurantSchema.safeParse({
+        name: "Trattoria Da Luigi",
+        slug: "trattoria-da-luigi",
+        agreedToTerms: true,
+      });
+      expect(result.success).toBe(true);
+      if (result.success) {
+        expect(result.data.agreedToTerms).toBe(true);
+      }
+    });
+
+    it("rejects restaurant creation when agreedToTerms is explicitly false", () => {
+      const result = CreateRestaurantSchema.safeParse({
+        name: "Trattoria Da Luigi",
+        slug: "trattoria-da-luigi",
+        agreedToTerms: false,
+      });
+      expect(result.success).toBe(false);
+      if (!result.success) {
+        expect(result.error.flatten().fieldErrors.agreedToTerms).toBeDefined();
+      }
     });
   });
 

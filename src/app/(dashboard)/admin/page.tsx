@@ -62,6 +62,22 @@ export default async function AdminPage() {
             },
           },
         },
+        subscription: {
+          select: {
+            tableLimit: true,
+          },
+        },
+        _count: {
+          select: {
+            tables: true,
+          },
+        },
+        tables: {
+          select: {
+            id: true,
+            isActive: true,
+          },
+        },
       },
     }),
     prisma.subscription.findMany({
@@ -177,10 +193,19 @@ export default async function AdminPage() {
     reviewedBy: r.reviewedBy,
   }));
 
-  const formattedRestaurants = restaurants.map((r) => ({
-    ...r,
-    taxRate: Number(r.taxRate),
-  }));
+  const formattedRestaurants = restaurants.map((r) => {
+    const activeTables = r.tables?.filter((t) => t.isActive).length ?? 0;
+    const totalTables = r._count?.tables ?? r.tables?.length ?? 0;
+    const tableLimit = r.subscription?.tableLimit ?? 10;
+
+    return {
+      ...r,
+      taxRate: Number(r.taxRate),
+      tableLimit,
+      totalTables,
+      activeTables,
+    };
+  });
 
   return (
     <div className="space-y-8">

@@ -148,6 +148,12 @@ export function RestaurantTableManager({
   }
 
   function openAddModal() {
+    if (usage.isAtLimit) {
+      setError(
+        `This restaurant has reached its allowed table limit (${usage.activeTables} / ${usage.subscription.tableLimit} tables used). You cannot create additional tables until the allowed limit is increased by the administrator or unused tables are deactivated.`
+      );
+      return;
+    }
     setEditingTable(null);
     setFormTableNumber("");
     setFormTableName("");

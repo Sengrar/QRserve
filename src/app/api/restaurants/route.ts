@@ -107,6 +107,8 @@ export async function POST(request: Request) {
         approvalStatus: ApprovalStatus.PENDING,
         isActive: false, // Must be approved before activation
         isSuspended: false,
+        termsAcceptedAt: new Date(),
+        termsVersion: "v1.0",
         members: {
           create: {
             userId: user.id,

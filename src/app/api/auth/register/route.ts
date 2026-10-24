@@ -50,12 +50,16 @@ export async function POST(request: Request) {
         passwordHash,
         role: UserRole.RESTAURANT_OWNER,
         isActive: true,
+        termsAcceptedAt: new Date(),
+        termsVersion: "v1.0",
       },
       select: {
         id: true,
         name: true,
         email: true,
         role: true,
+        termsAcceptedAt: true,
+        termsVersion: true,
         createdAt: true,
       },
     });

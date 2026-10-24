@@ -28,6 +28,11 @@ export const CreateRestaurantSchema = z.object({
     .optional()
     .nullable()
     .or(z.literal("")),
+  agreedToTerms: z
+    .boolean({ message: "You must accept the Terms & Conditions to register a restaurant." })
+    .refine((val) => val === true, {
+      message: "You must accept the Terms & Conditions to register a restaurant.",
+    }),
 });
 
 export const UpdateRestaurantSettingsSchema = z.object({
@@ -82,6 +87,12 @@ export const UpdateRestaurantStatusByAdminSchema = z.object({
   approvalStatus: z.nativeEnum(ApprovalStatus).optional(),
   rejectionReason: z.string().max(500).optional().nullable(),
   isSuspended: z.boolean().optional(),
+  tableLimit: z.coerce
+    .number()
+    .int("Allowed tables must be a whole number")
+    .min(1, "Allowed tables must be at least 1")
+    .max(10000, "Allowed tables cannot exceed 10000")
+    .optional(),
 });
 
 export const ToggleRestaurantActiveSchema = z.object({

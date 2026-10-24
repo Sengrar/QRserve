@@ -41,18 +41,6 @@ export async function GET(request: Request, context: RouteContext) {
       );
     }
 
-    const restaurant = await prisma.restaurant.findUnique({
-      where: { id: restaurantId },
-      select: { id: true, name: true, slug: true },
-    });
-
-    if (!restaurant) {
-      return NextResponse.json(
-        { success: false, code: "NOT_FOUND", error: "Restaurant not found." },
-        { status: 404 }
-      );
-    }
-
     const { searchParams } = new URL(request.url);
     const presetParam = (searchParams.get("preset") || "last7days").toLowerCase() as AnalyticsDatePreset;
     const startDateParam = searchParams.get("startDate");
@@ -96,12 +84,25 @@ export async function GET(request: Request, context: RouteContext) {
       }
     }
 
-    const analyticsData = await getRestaurantOrderAnalytics(
-      restaurant.id,
-      presetParam,
-      startDateParam,
-      endDateParam
-    );
+    const [restaurant, analyticsData] = await Promise.all([
+      prisma.restaurant.findUnique({
+        where: { id: restaurantId },
+        select: { id: true, name: true, slug: true },
+      }),
+      getRestaurantOrderAnalytics(
+        restaurantId,
+        presetParam,
+        startDateParam,
+        endDateParam
+      ),
+    ]);
+
+    if (!restaurant) {
+      return NextResponse.json(
+        { success: false, code: "NOT_FOUND", error: "Restaurant not found." },
+        { status: 404 }
+      );
+    }
 
     return NextResponse.json({
       success: true,

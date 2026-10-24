@@ -10,6 +10,10 @@ import {
   generateQrSvg,
 } from "@/lib/qr";
 import { prisma } from "@/lib/db/prisma";
+import {
+  calculateCombinedSessionBill,
+  confirmSessionPaymentAtCounter,
+} from "@/lib/orders/session-billing";
 
 export const dynamic = "force-dynamic";
 
@@ -48,10 +52,22 @@ export async function GET(request: Request, context: RouteContext) {
     const [restaurant, rawTable] = await Promise.all([
       prisma.restaurant.findUnique({
         where: { id: restaurantId },
-        select: { id: true, name: true, slug: true },
+        select: {
+          id: true,
+          name: true,
+          slug: true,
+          gstEnabled: true,
+          taxRate: true,
+          taxMode: true,
+          gstin: true,
+          legalName: true,
+        },
       }),
-      prisma.table.findUnique({
-        where: { id: tableId },
+      prisma.table.findFirst({
+        where: {
+          restaurantId,
+          OR: [{ id: tableId }, { tableNumber: tableId }],
+        },
       }),
     ]);
 
@@ -71,6 +87,49 @@ export async function GET(request: Request, context: RouteContext) {
       table = await prisma.table.update({
         where: { id: table.id },
         data: { qrToken, qrCodeUrl },
+      });
+    }
+
+    // Handle staff table combined bill requests: /api/restaurants/[id]/tables/[tableId]/bill
+    if (subAction === "bill") {
+      const session = await prisma.diningSession.findFirst({
+        where: {
+          restaurantId,
+          tableId,
+          status: { in: ["ACTIVE", "PAYMENT_REQUESTED"] },
+        },
+        include: {
+          orders: {
+            where: {
+              status: { not: "CANCELLED" },
+            },
+            include: {
+              items: true,
+            },
+            orderBy: { createdAt: "asc" },
+          },
+          table: {
+            select: { id: true, tableNumber: true, name: true },
+          },
+        },
+      });
+
+      if (!session || session.orders.length === 0) {
+        return NextResponse.json({
+          success: true,
+          data: null,
+          message: "No active orders found for this table.",
+        });
+      }
+
+      const combinedBill = calculateCombinedSessionBill({
+        session,
+        restaurant,
+      });
+
+      return NextResponse.json({
+        success: true,
+        data: combinedBill,
       });
     }
 
@@ -176,8 +235,11 @@ export async function POST(request: Request, context: RouteContext) {
         where: { id: restaurantId },
         select: { slug: true },
       }),
-      prisma.table.findUnique({
-        where: { id: tableId },
+      prisma.table.findFirst({
+        where: {
+          restaurantId,
+          OR: [{ id: tableId }, { tableNumber: tableId }],
+        },
       }),
     ]);
 
@@ -189,7 +251,70 @@ export async function POST(request: Request, context: RouteContext) {
       return NextResponse.json({ success: false, error: "Table not found." }, { status: 404 });
     }
 
-    // Generate fresh unpredictable token
+    const subAction = tablePath[1];
+
+    // Handle staff confirming counter payment: /api/restaurants/[id]/tables/[tableId]/confirm-payment
+    if (subAction === "confirm-payment") {
+      const body = await request.json().catch(() => ({}));
+      const paymentMethod = typeof body?.paymentMethod === "string" ? body.paymentMethod : "CASH";
+      const notes = typeof body?.notes === "string" ? body.notes : null;
+
+      // Find active dining session if not passed explicitly
+      let targetSessionId = typeof body?.sessionId === "string" ? body.sessionId : null;
+      if (!targetSessionId) {
+        const activeSession = await prisma.diningSession.findFirst({
+          where: {
+            restaurantId,
+            tableId,
+            status: { in: ["ACTIVE", "PAYMENT_REQUESTED"] },
+          },
+          select: { id: true },
+        });
+        if (!activeSession) {
+          return NextResponse.json(
+            { success: false, error: "No active dining session found for this table." },
+            { status: 400 }
+          );
+        }
+        targetSessionId = activeSession.id;
+      }
+
+      const paymentResult = await confirmSessionPaymentAtCounter({
+        sessionId: targetSessionId,
+        restaurantId,
+        staffUserId: user.id,
+        paymentMethod,
+        notes,
+      });
+
+      return NextResponse.json({
+        success: true,
+        message: "Payment confirmed successfully at counter.",
+        data: paymentResult,
+      });
+    }
+
+    // Handle staff reopening a table bill: /api/restaurants/[id]/tables/[tableId]/reopen-bill
+    if (subAction === "reopen-bill") {
+      const { reopenTableBill } = await import("@/lib/orders/session-billing");
+      const body = await request.json().catch(() => ({}));
+      const sessionId = typeof body?.sessionId === "string" ? body.sessionId : null;
+
+      const reopenResult = await reopenTableBill({
+        restaurantId,
+        tableId,
+        sessionId,
+        staffUserId: user.id,
+      });
+
+      return NextResponse.json({
+        success: true,
+        message: reopenResult.message,
+        data: reopenResult.data,
+      });
+    }
+
+    // Default: Generate fresh unpredictable token (subAction === "regenerate" or default POST)
     const newQrToken = generateTableQrToken();
     const newQrCodeUrl = buildTableQrUrl(restaurant.slug, newQrToken);
 
@@ -315,44 +440,44 @@ export async function PATCH(request: Request, context: RouteContext) {
       targetStatus = TableStatus.AVAILABLE;
     }
 
-    // Verify limit when activating an inactive table
-    if (targetIsActive && !table.isActive) {
-      await assertCanAddTable(restaurantId);
-    }
+    const { updated, usage } = await prisma.$transaction(async (tx) => {
+      // Verify limit when activating an inactive table
+      if (targetIsActive && !table.isActive) {
+        await tx.$executeRaw`SELECT id FROM "Restaurant" WHERE id = ${restaurantId} FOR UPDATE`;
+        await assertCanAddTable(restaurantId, tx);
+      }
 
-    // Check uniqueness if table number changes
-    if (tableNumber && tableNumber !== table.tableNumber) {
-      const conflict = await prisma.table.findUnique({
-        where: {
-          restaurantId_tableNumber: {
-            restaurantId,
-            tableNumber,
+      // Check uniqueness if table number changes
+      if (tableNumber && tableNumber !== table.tableNumber) {
+        const conflict = await tx.table.findUnique({
+          where: {
+            restaurantId_tableNumber: {
+              restaurantId,
+              tableNumber,
+            },
           },
+        });
+
+        if (conflict) {
+          const dupError = new Error(`Table "${tableNumber}" already exists for this restaurant.`);
+          dupError.name = "DuplicateTableError";
+          throw dupError;
+        }
+      }
+
+      const resUpdated = await tx.table.update({
+        where: { id: tableId },
+        data: {
+          ...(tableNumber !== undefined && { tableNumber }),
+          ...(name !== undefined && { name: name || null }),
+          status: targetStatus,
+          isActive: targetIsActive,
         },
       });
 
-      if (conflict) {
-        return NextResponse.json(
-          {
-            success: false,
-            error: `Table "${tableNumber}" already exists for this restaurant.`,
-          },
-          { status: 409 }
-        );
-      }
-    }
-
-    const updated = await prisma.table.update({
-      where: { id: tableId },
-      data: {
-        ...(tableNumber !== undefined && { tableNumber }),
-        ...(name !== undefined && { name: name || null }),
-        status: targetStatus,
-        isActive: targetIsActive,
-      },
+      const resUsage = await getTableUsageMetrics(restaurantId, tx);
+      return { updated: resUpdated, usage: resUsage };
     });
-
-    const usage = await getTableUsageMetrics(restaurantId);
 
     return NextResponse.json({
       success: true,
@@ -365,6 +490,9 @@ export async function PATCH(request: Request, context: RouteContext) {
   } catch (error) {
     if (error instanceof Error && error.name === "AuthenticationError") {
       return NextResponse.json({ success: false, error: error.message }, { status: 401 });
+    }
+    if (error instanceof Error && error.name === "DuplicateTableError") {
+      return NextResponse.json({ success: false, error: error.message }, { status: 409 });
     }
     if (
       error instanceof Error &&

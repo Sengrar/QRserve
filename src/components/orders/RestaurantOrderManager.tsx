@@ -22,12 +22,23 @@ import {
   Flame,
   Check,
   Ban,
+  Receipt,
 } from "lucide-react";
 import {
   ORDER_STATUS_CONFIG,
   validateOrderStatusTransition,
 } from "@/lib/orders/transitions";
 import { useRestaurantNotifications } from "@/context/RestaurantNotificationContext";
+import dynamic from "next/dynamic";
+import { CombinedSessionBillData } from "@/lib/orders/session-billing";
+
+const CombinedBillReceiptModal = dynamic(
+  () =>
+    import("@/components/orders/CombinedBillReceiptModal").then(
+      (mod) => mod.CombinedBillReceiptModal
+    ),
+  { ssr: false }
+);
 
 export interface OrderItemData {
   id: string;
@@ -61,6 +72,12 @@ export interface AdminOrderData {
   table: {
     tableNumber: string;
     name: string | null;
+  } | null;
+  diningSession?: {
+    id: string;
+    status: string;
+    paymentStatus: string;
+    billRequestedAt?: string | null;
   } | null;
   items: OrderItemData[];
 }
@@ -159,6 +176,15 @@ export function RestaurantOrderManager({
   const [cancelModalOrder, setCancelModalOrder] = useState<AdminOrderData | null>(null);
   const [now, setNow] = useState<Date>(new Date());
 
+  // Table Combined Billing & Counter Payment state
+  const [isTableBillModalOpen, setIsTableBillModalOpen] = useState(false);
+  const [selectedBillTable, setSelectedBillTable] = useState<string | null>(null);
+  const [tableBillData, setTableBillData] = useState<CombinedSessionBillData | null>(null);
+  const [isFetchingTableBill, setIsFetchingTableBill] = useState(false);
+  const [tableBillError, setTableBillError] = useState<string | null>(null);
+  const [isSettlingPayment, setIsSettlingPayment] = useState(false);
+  const [isReopeningBill, setIsReopeningBill] = useState(false);
+
   const knownOrderIdsRef = useRef<Set<string>>(new Set(initialOrders.map((o) => o.id)));
 
   // Live timer tick every 15 seconds to update elapsed time accurately
@@ -222,6 +248,111 @@ export function RestaurantOrderManager({
     },
     [restaurant.id, soundEnabled]
   );
+
+  // Open running combined bill for a specific table
+  const handleOpenTableBill = useCallback(
+    async (tableIdentifier: string) => {
+      setSelectedBillTable(tableIdentifier);
+      setIsTableBillModalOpen(true);
+      setIsFetchingTableBill(true);
+      setTableBillError(null);
+      try {
+        const res = await fetch(
+          `/api/restaurants/${restaurant.id}/tables/${encodeURIComponent(tableIdentifier)}/bill`
+        );
+        const json = await res.json();
+        if (res.ok && json.success) {
+          setTableBillData(json.data);
+        } else {
+          setTableBillError(json.error || "Failed to load table combined bill.");
+          setTableBillData(null);
+        }
+      } catch {
+        setTableBillError("Network error loading table bill.");
+        setTableBillData(null);
+      } finally {
+        setIsFetchingTableBill(false);
+      }
+    },
+    [restaurant.id]
+  );
+
+  // Staff confirms counter payment and generates consolidated final receipt
+  const handleConfirmTablePayment = async (paymentMethod: string, notes?: string) => {
+    if (!selectedBillTable) return;
+    setIsSettlingPayment(true);
+    try {
+      const res = await fetch(
+        `/api/restaurants/${restaurant.id}/tables/${encodeURIComponent(selectedBillTable)}/confirm-payment`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            paymentMethod,
+            notes,
+            sessionId: tableBillData?.sessionId,
+          }),
+        }
+      );
+      const json = await res.json();
+      if (res.ok && json.success) {
+        setSuccessToast(
+          `Payment confirmed for Table #${tableBillData?.table?.tableNumber || "Dine-In"} (Receipt #${json.data.receiptNumber})`
+        );
+        setTableBillData((prev: CombinedSessionBillData | null) =>
+          prev
+            ? {
+                ...prev,
+                paymentStatus: "PAID",
+                sessionStatus: "COMPLETED",
+                paymentMethod: json.data.paymentMethod,
+                paidAt: json.data.paidAt,
+                receiptNumber: json.data.receiptNumber,
+              }
+            : null
+        );
+        fetchOrders(false);
+      } else {
+        setTableBillError(json.error || "Failed to confirm payment.");
+      }
+    } catch {
+      setTableBillError("Network error while confirming payment.");
+    } finally {
+      setIsSettlingPayment(false);
+    }
+  };
+
+  // Staff reopens table bill if customer requests further orders after bill request
+  const handleReopenTableBill = async () => {
+    if (!selectedBillTable) return;
+    setIsReopeningBill(true);
+    try {
+      const res = await fetch(
+        `/api/restaurants/${restaurant.id}/tables/${encodeURIComponent(selectedBillTable)}/reopen-bill`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            sessionId: tableBillData?.sessionId,
+          }),
+        }
+      );
+      const json = await res.json();
+      if (res.ok && json.success) {
+        setSuccessToast(
+          `Table #${tableBillData?.table?.tableNumber || selectedBillTable} bill reopened for new orders.`
+        );
+        handleOpenTableBill(selectedBillTable);
+        fetchOrders(false);
+      } else {
+        setTableBillError(json.error || "Failed to reopen table bill.");
+      }
+    } catch {
+      setTableBillError("Network error while reopening table bill.");
+    } finally {
+      setIsReopeningBill(false);
+    }
+  };
 
   // Background polling every 10 seconds with Page Visibility API support
   useEffect(() => {
@@ -356,6 +487,17 @@ export function RestaurantOrderManager({
     };
   }, [orders]);
 
+  // Count distinct tables that requested the final bill
+  const paymentRequestedTablesCount = useMemo(() => {
+    const tableSet = new Set<string>();
+    orders.forEach((o) => {
+      if (o.diningSession?.status === "PAYMENT_REQUESTED" && o.table?.tableNumber) {
+        tableSet.add(o.table.tableNumber);
+      }
+    });
+    return tableSet.size;
+  }, [orders]);
+
   // Render order card component
   const renderOrderCard = (order: AdminOrderData) => {
     const isActing = actionLoadingId === order.id;
@@ -388,13 +530,24 @@ export function RestaurantOrderManager({
                 </span>
 
                 {order.table ? (
-                  <span className="px-2 py-0.5 rounded-md text-[11px] font-bold bg-amber-500/15 text-amber-300 border border-amber-500/30 flex items-center gap-1">
-                    <QrCode className="w-3 h-3 text-amber-400" />
-                    <span>
-                      Table {order.table.tableNumber}
-                      {order.table.name ? ` (${order.table.name})` : ""}
+                  <div className="flex items-center gap-1.5 flex-wrap">
+                    <span className="px-2 py-0.5 rounded-md text-[11px] font-bold bg-amber-500/15 text-amber-300 border border-amber-500/30 flex items-center gap-1">
+                      <QrCode className="w-3 h-3 text-amber-400" />
+                      <span>
+                        Table {order.table.tableNumber}
+                        {order.table.name ? ` (${order.table.name})` : ""}
+                      </span>
                     </span>
-                  </span>
+                    <button
+                      type="button"
+                      onClick={() => handleOpenTableBill(order.table!.tableNumber)}
+                      className="px-2 py-0.5 rounded-md text-[10px] font-bold bg-amber-400/20 hover:bg-amber-400/30 text-amber-300 border border-amber-400/40 transition flex items-center gap-1 cursor-pointer"
+                      title="View combined running bill and settle table"
+                    >
+                      <Receipt className="w-3 h-3" />
+                      <span>Table Bill</span>
+                    </button>
+                  </div>
                 ) : (
                   <span className="px-2 py-0.5 rounded-md text-[11px] font-bold bg-slate-800 text-slate-300 border border-slate-700 flex items-center gap-1">
                     <Store className="w-3 h-3 text-slate-400" />
@@ -455,6 +608,23 @@ export function RestaurantOrderManager({
               </span>
             </div>
           </div>
+
+          {/* Payment Requested Alert for Table */}
+          {order.diningSession?.status === "PAYMENT_REQUESTED" && order.table && (
+            <div className="mt-3 px-3 py-2 rounded-xl bg-rose-500/15 border border-rose-500/30 text-rose-300 text-xs flex items-center justify-between gap-2 shadow-sm animate-pulse">
+              <div className="flex items-center gap-1.5 font-bold">
+                <Receipt className="w-3.5 h-3.5 text-rose-400" />
+                <span>Final Bill Requested</span>
+              </div>
+              <button
+                type="button"
+                onClick={() => handleOpenTableBill(order.table!.tableNumber)}
+                className="px-2.5 py-1 rounded-lg bg-rose-600 hover:bg-rose-500 text-white text-[11px] font-bold transition cursor-pointer shadow-sm shadow-rose-600/30"
+              >
+                Settle & Print
+              </button>
+            </div>
+          )}
 
           {/* Ordered Item Names and Quantities + Item-Level Instructions */}
           <div className="mt-3.5 pt-2.5 border-t border-slate-800/80 divide-y divide-slate-800/50">
@@ -720,6 +890,45 @@ export function RestaurantOrderManager({
           >
             <RefreshCw className={`w-3.5 h-3.5 ${isManualRefreshing ? "animate-spin text-amber-400" : ""}`} />
             <span>Refresh</span>
+          </button>
+
+          {/* Table Running Bills & Counter Payment */}
+          <button
+            type="button"
+            id="table-bills-manager-btn"
+            onClick={() => {
+              const pendingBillOrder = orders.find(
+                (o) => o.diningSession?.status === "PAYMENT_REQUESTED" && o.table
+              );
+              const activeTableOrder =
+                pendingBillOrder ||
+                orders.find(
+                  (o) =>
+                    o.status !== OrderStatus.CANCELLED &&
+                    o.status !== OrderStatus.COMPLETED &&
+                    o.table
+                );
+              if (activeTableOrder?.table) {
+                handleOpenTableBill(activeTableOrder.table.tableNumber);
+              } else {
+                setIsTableBillModalOpen(true);
+                setTableBillData(null);
+                setTableBillError("No active tables with pending orders found.");
+              }
+            }}
+            className={`px-3 py-2 rounded-xl text-xs font-bold transition flex items-center gap-1.5 cursor-pointer shadow-md ${
+              paymentRequestedTablesCount > 0
+                ? "bg-rose-500 hover:bg-rose-400 text-white shadow-rose-500/20 ring-2 ring-rose-400/50 animate-pulse"
+                : "text-slate-950 bg-gradient-to-r from-amber-400 to-orange-400 hover:from-amber-300 hover:to-orange-300 shadow-amber-500/10"
+            }`}
+          >
+            <Receipt className="w-3.5 h-3.5" />
+            <span>Table Bills</span>
+            {paymentRequestedTablesCount > 0 && (
+              <span className="px-1.5 py-0.2 rounded-full bg-black/40 text-rose-200 text-[10px] font-mono">
+                {paymentRequestedTablesCount} ready
+              </span>
+            )}
           </button>
 
           {/* View Mode Toggle: Kanban vs Queue */}
@@ -1103,6 +1312,25 @@ export function RestaurantOrderManager({
           </div>
         </div>
       )}
+
+      {/* Table Combined Bill & Counter Payment Modal */}
+      <CombinedBillReceiptModal
+        isOpen={isTableBillModalOpen}
+        onClose={() => {
+          setIsTableBillModalOpen(false);
+          setSelectedBillTable(null);
+          setTableBillData(null);
+          setTableBillError(null);
+        }}
+        billData={tableBillData}
+        isLoading={isFetchingTableBill}
+        error={tableBillError}
+        isStaffMode={true}
+        onConfirmPayment={handleConfirmTablePayment}
+        isProcessingPayment={isSettlingPayment}
+        onReopenBill={handleReopenTableBill}
+        isReopeningBill={isReopeningBill}
+      />
     </div>
   );
 }

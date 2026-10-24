@@ -2,14 +2,29 @@
 
 import React, { useState, ComponentProps } from "react";
 import { Store, CreditCard } from "lucide-react";
+import dynamic from "next/dynamic";
 import { AdminApprovalTable } from "@/components/admin/AdminApprovalTable";
-import { AdminSubscriptionManager } from "@/components/admin/AdminSubscriptionManager";
+import type { AdminSubscriptionManagerProps } from "@/components/admin/AdminSubscriptionManager";
+
+const AdminSubscriptionManager = dynamic(
+  () =>
+    import("@/components/admin/AdminSubscriptionManager").then(
+      (mod) => mod.AdminSubscriptionManager
+    ),
+  {
+    loading: () => (
+      <div className="glass-card rounded-2xl p-12 text-center text-slate-400 animate-pulse border border-slate-800">
+        Loading Subscriptions & Payments...
+      </div>
+    ),
+  }
+);
 
 interface AdminDashboardTabsProps {
   restaurants: ComponentProps<typeof AdminApprovalTable>["initialRestaurants"];
-  subscriptions: ComponentProps<typeof AdminSubscriptionManager>["initialSubscriptions"];
-  paymentRequests: ComponentProps<typeof AdminSubscriptionManager>["initialPaymentRequests"];
-  paymentConfig: ComponentProps<typeof AdminSubscriptionManager>["initialPaymentConfig"];
+  subscriptions: AdminSubscriptionManagerProps["initialSubscriptions"];
+  paymentRequests: AdminSubscriptionManagerProps["initialPaymentRequests"];
+  paymentConfig: AdminSubscriptionManagerProps["initialPaymentConfig"];
   pendingApprovalsCount: number;
   pendingPaymentsCount: number;
 }

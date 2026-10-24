@@ -25,37 +25,48 @@ export async function GET(_request: Request, context: RouteContext) {
       );
     }
 
-    const restaurant = await prisma.restaurant.findUnique({
-      where: { id: restaurantId },
-      select: { slug: true },
-    });
+    const [restaurant, rawTables] = await Promise.all([
+      prisma.restaurant.findUnique({
+        where: { id: restaurantId },
+        select: { slug: true },
+      }),
+      prisma.table.findMany({
+        where: { restaurantId },
+        orderBy: [{ tableNumber: "asc" }],
+      }),
+    ]);
 
     if (!restaurant) {
       return NextResponse.json({ success: false, error: "Restaurant not found." }, { status: 404 });
     }
 
-    const [rawTables, usage] = await Promise.all([
-      prisma.table.findMany({
-        where: { restaurantId },
-        orderBy: [{ tableNumber: "asc" }],
-      }),
-      getTableUsageMetrics(restaurantId),
-    ]);
+    const totalTables = rawTables.length;
+    const activeTables = rawTables.filter((t) => t.isActive).length;
 
-    // Backfill any table lacking a secure qrToken
-    const tables = await Promise.all(
-      rawTables.map(async (t) => {
-        if (!t.qrToken) {
-          const qrToken = generateTableQrToken();
-          const qrCodeUrl = buildTableQrUrl(restaurant.slug, qrToken);
-          return prisma.table.update({
-            where: { id: t.id },
-            data: { qrToken, qrCodeUrl },
-          });
-        }
-        return t;
-      })
-    );
+    const usage = await getTableUsageMetrics(restaurantId, prisma, {
+      totalTables,
+      activeTables,
+    });
+
+    // Check if any table actually lacks a qrToken before invoking updates
+    const hasMissingTokens = rawTables.some((t) => !t.qrToken);
+    let tables = rawTables;
+
+    if (hasMissingTokens) {
+      tables = await Promise.all(
+        rawTables.map(async (t) => {
+          if (!t.qrToken) {
+            const qrToken = generateTableQrToken();
+            const qrCodeUrl = buildTableQrUrl(restaurant.slug, qrToken);
+            return prisma.table.update({
+              where: { id: t.id },
+              data: { qrToken, qrCodeUrl },
+            });
+          }
+          return t;
+        })
+      );
+    }
 
     return NextResponse.json({
       success: true,
@@ -113,47 +124,50 @@ export async function POST(request: Request, context: RouteContext) {
     // Strict Server-Side Subscription & Table Limit Guard:
     // Adding an active table requires subscription check and available allowance
     const willBeActive = isActive !== false && status !== TableStatus.INACTIVE;
-    if (willBeActive) {
-      await assertCanAddTable(restaurantId);
-    }
 
-    // Check uniqueness of table number for this restaurant
-    const existingTable = await prisma.table.findUnique({
-      where: {
-        restaurantId_tableNumber: {
+    const { newTable, usage } = await prisma.$transaction(async (tx) => {
+      // Row-level lock on Restaurant row to serialize concurrent table additions for this restaurant
+      await tx.$executeRaw`SELECT id FROM "Restaurant" WHERE id = ${restaurantId} FOR UPDATE`;
+
+      if (willBeActive) {
+        await assertCanAddTable(restaurantId, tx);
+      }
+
+      // Check uniqueness of table number for this restaurant
+      const existingTable = await tx.table.findUnique({
+        where: {
+          restaurantId_tableNumber: {
+            restaurantId,
+            tableNumber,
+          },
+        },
+      });
+
+      if (existingTable) {
+        const dupError = new Error(`Table "${tableNumber}" already exists for this restaurant. Please use a distinct number.`);
+        dupError.name = "DuplicateTableError";
+        throw dupError;
+      }
+
+      const qrToken = generateTableQrToken();
+      const qrCodeUrl = buildTableQrUrl(restaurant.slug, qrToken);
+      const initialStatus = willBeActive ? (status || TableStatus.AVAILABLE) : TableStatus.INACTIVE;
+
+      const created = await tx.table.create({
+        data: {
           restaurantId,
           tableNumber,
+          name: name || null,
+          status: initialStatus,
+          qrToken,
+          qrCodeUrl,
+          isActive: willBeActive,
         },
-      },
+      });
+
+      const metrics = await getTableUsageMetrics(restaurantId, tx);
+      return { newTable: created, usage: metrics };
     });
-
-    if (existingTable) {
-      return NextResponse.json(
-        {
-          success: false,
-          error: `Table "${tableNumber}" already exists for this restaurant. Please use a distinct number.`,
-        },
-        { status: 409 }
-      );
-    }
-
-    const qrToken = generateTableQrToken();
-    const qrCodeUrl = buildTableQrUrl(restaurant.slug, qrToken);
-    const initialStatus = willBeActive ? (status || TableStatus.AVAILABLE) : TableStatus.INACTIVE;
-
-    const newTable = await prisma.table.create({
-      data: {
-        restaurantId,
-        tableNumber,
-        name: name || null,
-        status: initialStatus,
-        qrToken,
-        qrCodeUrl,
-        isActive: willBeActive,
-      },
-    });
-
-    const usage = await getTableUsageMetrics(restaurantId);
 
     return NextResponse.json(
       {
@@ -169,6 +183,9 @@ export async function POST(request: Request, context: RouteContext) {
   } catch (error) {
     if (error instanceof Error && error.name === "AuthenticationError") {
       return NextResponse.json({ success: false, error: error.message }, { status: 401 });
+    }
+    if (error instanceof Error && error.name === "DuplicateTableError") {
+      return NextResponse.json({ success: false, error: error.message }, { status: 409 });
     }
     if (
       error instanceof Error &&

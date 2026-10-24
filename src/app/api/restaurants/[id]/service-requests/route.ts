@@ -24,6 +24,8 @@ export async function GET(request: Request, context: RouteContext) {
 
     const { searchParams } = new URL(request.url);
     const statusParam = searchParams.get("status")?.toUpperCase();
+    const limitParam = searchParams.get("limit");
+    const includeStats = searchParams.get("includeStats") !== "false";
 
     // Build status filter
     const statusFilter =
@@ -31,28 +33,48 @@ export async function GET(request: Request, context: RouteContext) {
         ? (statusParam as ServiceRequestStatus)
         : undefined;
 
+    const takeLimit = limitParam ? Math.min(Math.max(parseInt(limitParam, 10) || 50, 1), 100) : 100;
+
+    const requestsPromise = prisma.serviceRequest.findMany({
+      where: {
+        restaurantId,
+        ...(statusFilter && { status: statusFilter }),
+      },
+      include: {
+        table: {
+          select: {
+            id: true,
+            tableNumber: true,
+            name: true,
+          },
+        },
+      },
+      orderBy: { createdAt: "desc" },
+      take: takeLimit,
+    });
+
+    if (!includeStats) {
+      const requests = await requestsPromise;
+      const pendingCount = statusFilter === "PENDING" ? requests.length : requests.filter((r) => r.status === "PENDING").length;
+      return NextResponse.json({
+        success: true,
+        data: {
+          requests,
+          stats: {
+            pending: pendingCount,
+            inProgress: 0,
+            completedToday: 0,
+          },
+        },
+      });
+    }
+
     // Start of today (midnight) for stats
     const startOfToday = new Date();
     startOfToday.setHours(0, 0, 0, 0);
 
     const [requests, totalPending, totalInProgress, completedToday] = await Promise.all([
-      prisma.serviceRequest.findMany({
-        where: {
-          restaurantId,
-          ...(statusFilter && { status: statusFilter }),
-        },
-        include: {
-          table: {
-            select: {
-              id: true,
-              tableNumber: true,
-              name: true,
-            },
-          },
-        },
-        orderBy: { createdAt: "desc" },
-        take: 100,
-      }),
+      requestsPromise,
       prisma.serviceRequest.count({
         where: {
           restaurantId,

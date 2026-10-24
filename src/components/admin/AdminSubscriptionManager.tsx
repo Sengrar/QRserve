@@ -103,7 +103,7 @@ interface PaymentConfig {
   instructions: string | null;
 }
 
-interface AdminSubscriptionManagerProps {
+export interface AdminSubscriptionManagerProps {
   initialSubscriptions: SubscriptionItem[];
   initialPaymentRequests: PaymentRequestItem[];
   initialPaymentConfig: PaymentConfig;

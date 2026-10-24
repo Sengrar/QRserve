@@ -15,6 +15,7 @@ export default function NewRestaurantPage() {
   const [email, setEmail] = useState("");
   const [address, setAddress] = useState("");
   const [googleReviewUrl, setGoogleReviewUrl] = useState("");
+  const [agreedToTerms, setAgreedToTerms] = useState(false);
 
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
@@ -33,6 +34,12 @@ export default function NewRestaurantPage() {
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
     setError(null);
+
+    if (!agreedToTerms) {
+      setError("You must read and agree to the Terms & Conditions before registering a restaurant.");
+      return;
+    }
+
     setLoading(true);
 
     try {
@@ -47,6 +54,7 @@ export default function NewRestaurantPage() {
           email: email || null,
           address: address || null,
           googleReviewUrl: googleReviewUrl || null,
+          agreedToTerms,
         }),
       });
 
@@ -222,6 +230,31 @@ export default function NewRestaurantPage() {
             </p>
           </div>
 
+          <div className="p-4 rounded-xl bg-slate-900/60 border border-slate-800 space-y-2">
+            <label className="flex items-start gap-2.5 text-xs text-slate-300 cursor-pointer select-none">
+              <input
+                type="checkbox"
+                id="restaurant-terms-checkbox"
+                checked={agreedToTerms}
+                onChange={(e) => setAgreedToTerms(e.target.checked)}
+                className="mt-0.5 w-4 h-4 rounded border-slate-700 bg-slate-950 text-amber-500 focus:ring-amber-500/40 focus:ring-offset-0 focus:outline-none cursor-pointer accent-amber-500"
+              />
+              <span className="leading-relaxed">
+                I agree to the{" "}
+                <Link
+                  href="/terms"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="text-amber-400 hover:text-amber-300 underline underline-offset-2 transition font-medium"
+                  onClick={(e) => e.stopPropagation()}
+                >
+                  QRServe Terms & Conditions
+                </Link>
+                . I understand that the Restaurant is solely responsible for menu accuracy, billing, applicable taxes, and verifying payments at the counter before marking orders or bills as paid.
+              </span>
+            </label>
+          </div>
+
           <div className="pt-4 border-t border-slate-800 flex items-center justify-end gap-3">
             <Link
               href="/dashboard"
@@ -231,7 +264,7 @@ export default function NewRestaurantPage() {
             </Link>
             <button
               type="submit"
-              disabled={loading}
+              disabled={loading || !agreedToTerms}
               className="px-5 py-2.5 rounded-xl font-semibold text-sm text-slate-950 bg-gradient-to-r from-amber-400 to-orange-500 hover:from-amber-300 hover:to-orange-400 transition shadow-lg shadow-amber-500/20 disabled:opacity-50 cursor-pointer"
             >
               {loading ? "Submitting..." : "Submit for Approval"}

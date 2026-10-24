@@ -96,6 +96,7 @@ describe("Restaurant Orders Tenant Isolation & Access Control", () => {
         customerPhone: null,
         customerName: null,
         idempotencyKey: null,
+        diningSessionId: null,
         createdAt: new Date(),
         updatedAt: new Date(),
       });

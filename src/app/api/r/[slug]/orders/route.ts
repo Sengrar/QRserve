@@ -6,6 +6,7 @@ import { CreateOrderSchema } from "@/lib/validations/order";
 import { generateOrderNumber, generateOrderAccessToken } from "@/lib/orders";
 import { calculateMixedOrderTax } from "@/lib/orders/tax";
 import { validateCouponEligibility } from "@/lib/coupons/calculator";
+import { getOrCreateActiveDiningSession } from "@/lib/orders/session-billing";
 
 export const dynamic = "force-dynamic";
 
@@ -80,6 +81,8 @@ export async function POST(request: Request, context: RouteContext) {
 
     const {
       qrToken,
+      tableId,
+      tableNumber,
       customerNotes,
       idempotencyKey,
       couponCode,
@@ -93,13 +96,30 @@ export async function POST(request: Request, context: RouteContext) {
       const existingOrder = await prisma.order.findUnique({
         where: { idempotencyKey },
         include: {
-          table: { select: { tableNumber: true, name: true } },
+          table: { select: { tableNumber: true, name: true, qrToken: true } },
+          diningSession: {
+            select: {
+              id: true,
+              sessionCode: true,
+              status: true,
+              paymentStatus: true,
+            },
+          },
           items: true,
         },
       });
 
       if (existingOrder && existingOrder.restaurantId === restaurant.id) {
         const accessToken = generateOrderAccessToken(existingOrder.orderNumber, restaurant.id);
+        const tableUrlParams = new URLSearchParams();
+        tableUrlParams.set("token", accessToken);
+        if (existingOrder.table?.qrToken) {
+          tableUrlParams.set("qr", existingOrder.table.qrToken);
+        } else if (existingOrder.table?.tableNumber) {
+          tableUrlParams.set("table", existingOrder.table.tableNumber);
+        }
+        const confirmationUrl = `/r/${restaurant.slug}/orders/${existingOrder.orderNumber}?${tableUrlParams.toString()}`;
+
         return NextResponse.json({
           success: true,
           code: "ORDER_EXISTS",
@@ -110,6 +130,14 @@ export async function POST(request: Request, context: RouteContext) {
             createdAt: existingOrder.createdAt.toISOString(),
             table: existingOrder.table
               ? { tableNumber: existingOrder.table.tableNumber, name: existingOrder.table.name }
+              : null,
+            diningSession: existingOrder.diningSession
+              ? {
+                  id: existingOrder.diningSession.id,
+                  sessionCode: existingOrder.diningSession.sessionCode,
+                  status: existingOrder.diningSession.status,
+                  paymentStatus: existingOrder.diningSession.paymentStatus,
+                }
               : null,
             subtotal: Number(existingOrder.subtotal),
             discountAmount: Number(existingOrder.discountAmount || 0),
@@ -133,14 +161,14 @@ export async function POST(request: Request, context: RouteContext) {
               taxableAmount: Number(i.taxableAmount),
               notes: i.notes,
             })),
-            confirmationUrl: `/r/${restaurant.slug}/orders/${existingOrder.orderNumber}?token=${accessToken}`,
+            confirmationUrl,
           },
         });
       }
     }
 
     // 4. Resolve and Validate Table Context strictly
-    let resolvedTable: { id: string; tableNumber: string; name: string | null } | null = null;
+    let resolvedTable: { id: string; tableNumber: string; name: string | null; qrToken: string | null } | null = null;
 
     if (qrToken) {
       const table = await prisma.table.findFirst({
@@ -152,6 +180,7 @@ export async function POST(request: Request, context: RouteContext) {
           id: true,
           tableNumber: true,
           name: true,
+          qrToken: true,
           isActive: true,
           status: true,
         },
@@ -183,7 +212,56 @@ export async function POST(request: Request, context: RouteContext) {
         id: table.id,
         tableNumber: table.tableNumber,
         name: table.name,
+        qrToken: table.qrToken,
       };
+    } else if (tableId) {
+      const table = await prisma.table.findFirst({
+        where: {
+          restaurantId: restaurant.id,
+          id: tableId,
+        },
+        select: {
+          id: true,
+          tableNumber: true,
+          name: true,
+          qrToken: true,
+          isActive: true,
+          status: true,
+        },
+      });
+
+      if (table && table.isActive && table.status !== "INACTIVE") {
+        resolvedTable = {
+          id: table.id,
+          tableNumber: table.tableNumber,
+          name: table.name,
+          qrToken: table.qrToken,
+        };
+      }
+    } else if (tableNumber) {
+      const table = await prisma.table.findFirst({
+        where: {
+          restaurantId: restaurant.id,
+          tableNumber: tableNumber.trim(),
+        },
+        select: {
+          id: true,
+          tableNumber: true,
+          name: true,
+          qrToken: true,
+          isActive: true,
+          status: true,
+        },
+      });
+
+      if (table && table.isActive && table.status !== "INACTIVE") {
+        resolvedTable = {
+          id: table.id,
+          tableNumber: table.tableNumber,
+          name: table.name,
+          qrToken: table.qrToken,
+        };
+      }
     }
 
     // 5. Query and Authoritatively Validate Menu Items
@@ -193,7 +271,13 @@ export async function POST(request: Request, context: RouteContext) {
       where: {
         id: { in: uniqueItemIds },
       },
-      include: {
+      select: {
+        id: true,
+        name: true,
+        price: true,
+        isAvailable: true,
+        useCustomTaxRate: true,
+        taxRate: true,
         category: {
           select: {
             restaurantId: true,
@@ -407,11 +491,21 @@ export async function POST(request: Request, context: RouteContext) {
             });
           }
 
+          let diningSessionId: string | null = null;
+          if (resolvedTable?.id) {
+            const activeSession = await getOrCreateActiveDiningSession(tx, {
+              restaurantId: restaurant.id,
+              tableId: resolvedTable.id,
+            });
+            diningSessionId = activeSession.id;
+          }
+
           const created = await tx.order.create({
             data: {
               orderNumber: candidateOrderNumber,
               restaurantId: restaurant.id,
               tableId: resolvedTable?.id ?? null,
+              diningSessionId,
               customerNotes: customerNotes || null,
               couponId: resolvedCoupon?.id ?? null,
               couponCode: resolvedCoupon?.code ?? null,
@@ -444,7 +538,15 @@ export async function POST(request: Request, context: RouteContext) {
             },
             include: {
               items: true,
-              table: { select: { tableNumber: true, name: true } },
+              table: { select: { tableNumber: true, name: true, qrToken: true } },
+              diningSession: {
+                select: {
+                  id: true,
+                  sessionCode: true,
+                  status: true,
+                  paymentStatus: true,
+                },
+              },
             },
           });
 
@@ -463,6 +565,17 @@ export async function POST(request: Request, context: RouteContext) {
           return created;
         });
       } catch (err: unknown) {
+        if (err instanceof Error && err.message.startsWith("BILL_LOCKED:")) {
+          const parts = err.message.split(": ");
+          return NextResponse.json(
+            {
+              success: false,
+              code: "BILL_LOCKED",
+              error: parts[1] || "The final bill has already been requested for this table. Please contact staff to order more.",
+            },
+            { status: 409 }
+          );
+        }
         if (err instanceof Error && err.message.startsWith("COUPON_")) {
           const parts = err.message.split(": ");
           return NextResponse.json(
@@ -488,7 +601,15 @@ export async function POST(request: Request, context: RouteContext) {
           const raceOrder = await prisma.order.findUnique({
             where: { idempotencyKey },
             include: {
-              table: { select: { tableNumber: true, name: true } },
+              table: { select: { tableNumber: true, name: true, qrToken: true } },
+              diningSession: {
+                select: {
+                  id: true,
+                  sessionCode: true,
+                  status: true,
+                  paymentStatus: true,
+                },
+              },
               items: true,
             },
           });
@@ -515,44 +636,63 @@ export async function POST(request: Request, context: RouteContext) {
     // 9. Generate Secure Tracking Token
     const accessToken = generateOrderAccessToken(newOrder.orderNumber, restaurant.id);
 
-    return NextResponse.json(
-      {
-        success: true,
-        data: {
-          orderNumber: newOrder.orderNumber,
-          accessToken,
-          status: newOrder.status,
-          createdAt: newOrder.createdAt.toISOString(),
-          table: newOrder.table
-            ? { tableNumber: newOrder.table.tableNumber, name: newOrder.table.name }
-            : null,
-          subtotal: Number(newOrder.subtotal),
-          discountAmount: Number(newOrder.discountAmount || 0),
-          couponCode: newOrder.couponCode || null,
-          taxRate: Number(newOrder.taxRate),
-          taxAmount: Number(newOrder.taxAmount),
-          taxMode: newOrder.taxMode,
-          taxableAmount: Number(newOrder.taxableAmount),
-          cgstAmount: Number(newOrder.cgstAmount),
-          sgstAmount: Number(newOrder.sgstAmount),
-          totalAmount: Number(newOrder.totalAmount),
-          customerNotes: newOrder.customerNotes,
-          items: newOrder.items.map((i) => ({
-            id: i.id,
-            itemName: i.itemName,
-            quantity: i.quantity,
-            unitPrice: Number(i.unitPrice),
-            subtotal: Number(i.subtotal),
-            taxRate: Number(i.taxRate),
-            taxAmount: Number(i.taxAmount),
-            taxableAmount: Number(i.taxableAmount),
-            notes: i.notes,
-          })),
-          confirmationUrl: `/r/${restaurant.slug}/orders/${newOrder.orderNumber}?token=${accessToken}`,
-        },
-      },
-      { status: 201 }
-    );
+          const tableUrlParams = new URLSearchParams();
+          tableUrlParams.set("token", accessToken);
+          const effectiveQr = resolvedTable?.qrToken || newOrder.table?.qrToken;
+          const effectiveTableNum = resolvedTable?.tableNumber || newOrder.table?.tableNumber;
+          if (effectiveQr) {
+            tableUrlParams.set("qr", effectiveQr);
+          } else if (effectiveTableNum) {
+            tableUrlParams.set("table", effectiveTableNum);
+          }
+          const confirmationUrl = `/r/${restaurant.slug}/orders/${newOrder.orderNumber}?${tableUrlParams.toString()}`;
+
+          return NextResponse.json(
+            {
+              success: true,
+              data: {
+                orderNumber: newOrder.orderNumber,
+                accessToken,
+                status: newOrder.status,
+                createdAt: newOrder.createdAt.toISOString(),
+                table: newOrder.table
+                  ? { tableNumber: newOrder.table.tableNumber, name: newOrder.table.name }
+                  : null,
+                diningSession: newOrder.diningSession
+                  ? {
+                      id: newOrder.diningSession.id,
+                      sessionCode: newOrder.diningSession.sessionCode,
+                      status: newOrder.diningSession.status,
+                      paymentStatus: newOrder.diningSession.paymentStatus,
+                    }
+                  : null,
+                subtotal: Number(newOrder.subtotal),
+                discountAmount: Number(newOrder.discountAmount || 0),
+                couponCode: newOrder.couponCode || null,
+                taxRate: Number(newOrder.taxRate),
+                taxAmount: Number(newOrder.taxAmount),
+                taxMode: newOrder.taxMode,
+                taxableAmount: Number(newOrder.taxableAmount),
+                cgstAmount: Number(newOrder.cgstAmount),
+                sgstAmount: Number(newOrder.sgstAmount),
+                totalAmount: Number(newOrder.totalAmount),
+                customerNotes: newOrder.customerNotes,
+                items: newOrder.items.map((i) => ({
+                  id: i.id,
+                  itemName: i.itemName,
+                  quantity: i.quantity,
+                  unitPrice: Number(i.unitPrice),
+                  subtotal: Number(i.subtotal),
+                  taxRate: Number(i.taxRate),
+                  taxAmount: Number(i.taxAmount),
+                  taxableAmount: Number(i.taxableAmount),
+                  notes: i.notes,
+                })),
+                confirmationUrl,
+              },
+            },
+            { status: 201 }
+          );
   } catch (error) {
     console.error("POST /api/r/[slug]/orders error:", error);
     return NextResponse.json(

@@ -60,6 +60,14 @@ export async function GET(request: Request, context: RouteContext) {
           : {}),
       },
       include: {
+        diningSession: {
+          select: {
+            id: true,
+            status: true,
+            paymentStatus: true,
+            billRequestedAt: true,
+          },
+        },
         table: {
           select: {
             tableNumber: true,
@@ -104,6 +112,14 @@ export async function GET(request: Request, context: RouteContext) {
         totalAmount: Number(o.totalAmount),
         createdAt: o.createdAt.toISOString(),
         updatedAt: o.updatedAt.toISOString(),
+        diningSession: o.diningSession
+          ? {
+              id: o.diningSession.id,
+              status: o.diningSession.status,
+              paymentStatus: o.diningSession.paymentStatus,
+              billRequestedAt: o.diningSession.billRequestedAt?.toISOString() || null,
+            }
+          : null,
         table: o.table
           ? {
               tableNumber: o.table.tableNumber,

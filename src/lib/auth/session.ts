@@ -1,5 +1,6 @@
 import { SignJWT, jwtVerify } from "jose";
 import { cookies } from "next/headers";
+import { cache } from "react";
 import { SessionUser } from "@/types";
 import { UserRole } from "@prisma/client";
 
@@ -96,8 +97,9 @@ export async function setSessionCookie(token: string): Promise<void> {
 
 /**
  * Retrieves the current session user from the incoming request cookies.
+ * Memoized per request using React cache to eliminate redundant JWT verification.
  */
-export async function getSessionUser(): Promise<SessionUser | null> {
+export const getSessionUser = cache(async function getSessionUser(): Promise<SessionUser | null> {
   try {
     const cookieStore = await cookies();
     const token = cookieStore.get(COOKIE_NAME)?.value;
@@ -106,7 +108,7 @@ export async function getSessionUser(): Promise<SessionUser | null> {
   } catch {
     return null;
   }
-}
+});
 
 /**
  * Deletes the session cookie on logout.

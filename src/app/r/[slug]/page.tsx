@@ -143,65 +143,40 @@ export default async function PublicMenuPage({
     })),
   }));
 
-  // Resolve Table context strictly scoped to THIS restaurant
-  let resolvedTable: { tableNumber: string; name: string | null } | null = null;
-  let tableMessage: { type: "info" | "warning"; text: string } | null = null;
-
-  if (qrTokenQuery) {
-    const table = await prisma.table.findFirst({
-      where: {
-        restaurantId: restaurant.id,
-        qrToken: qrTokenQuery,
-      },
-      select: {
-        tableNumber: true,
-        name: true,
-        isActive: true,
-        status: true,
-      },
-    });
-
-    if (!table) {
-      tableMessage = {
-        type: "warning",
-        text: "This table QR code is invalid or has been replaced. Please ask your server for assistance.",
-      };
-    } else if (!table.isActive || table.status === "INACTIVE") {
-      tableMessage = {
-        type: "warning",
-        text: `Table ${table.tableNumber} is currently marked inactive and not accepting orders.`,
-      };
-    } else {
-      resolvedTable = {
-        tableNumber: table.tableNumber,
-        name: table.name,
-      };
-    }
-  } else if (tableNumberQuery) {
-    const table = await prisma.table.findFirst({
-      where: {
-        restaurantId: restaurant.id,
-        tableNumber: tableNumberQuery,
-      },
-      select: {
-        tableNumber: true,
-        name: true,
-        isActive: true,
-        status: true,
-      },
-    });
-
-    if (table && table.isActive && table.status !== "INACTIVE") {
-      resolvedTable = {
-        tableNumber: table.tableNumber,
-        name: table.name,
-      };
-    }
-  }
-
-  // Fetch valid, started, non-expired, and non-exhausted public coupon offers
+  // Resolve Table context strictly scoped to THIS restaurant and fetch public coupon offers concurrently
   const now = new Date();
-  const rawCoupons = await prisma.coupon.findMany({
+
+  const tableQueryPromise = qrTokenQuery
+    ? prisma.table.findFirst({
+        where: {
+          restaurantId: restaurant.id,
+          qrToken: qrTokenQuery,
+        },
+        select: {
+          tableNumber: true,
+          name: true,
+          qrToken: true,
+          isActive: true,
+          status: true,
+        },
+      })
+    : tableNumberQuery
+    ? prisma.table.findFirst({
+        where: {
+          restaurantId: restaurant.id,
+          tableNumber: tableNumberQuery,
+        },
+        select: {
+          tableNumber: true,
+          name: true,
+          qrToken: true,
+          isActive: true,
+          status: true,
+        },
+      })
+    : Promise.resolve(null);
+
+  const couponsPromise = prisma.coupon.findMany({
     where: {
       restaurantId: restaurant.id,
       isActive: true,
@@ -227,6 +202,39 @@ export default async function PublicMenuPage({
       usageCount: true,
     },
   });
+
+  const [table, rawCoupons] = await Promise.all([tableQueryPromise, couponsPromise]);
+
+  let resolvedTable: { tableNumber: string; name: string | null; qrToken: string | null } | null = null;
+  let tableMessage: { type: "info" | "warning"; text: string } | null = null;
+
+  if (qrTokenQuery) {
+    if (!table) {
+      tableMessage = {
+        type: "warning",
+        text: "This table QR code is invalid or has been replaced. Please ask your server for assistance.",
+      };
+    } else if (!table.isActive || table.status === "INACTIVE") {
+      tableMessage = {
+        type: "warning",
+        text: `Table ${table.tableNumber} is currently marked inactive and not accepting orders.`,
+      };
+    } else {
+      resolvedTable = {
+        tableNumber: table.tableNumber,
+        name: table.name,
+        qrToken: table.qrToken,
+      };
+    }
+  } else if (tableNumberQuery) {
+    if (table && table.isActive && table.status !== "INACTIVE") {
+      resolvedTable = {
+        tableNumber: table.tableNumber,
+        name: table.name,
+        qrToken: table.qrToken,
+      };
+    }
+  }
 
   const publicOffers = rawCoupons
     .filter((c) => c.usageLimit === null || c.usageCount < c.usageLimit)
@@ -260,7 +268,7 @@ export default async function PublicMenuPage({
       }}
       tableNumber={resolvedTable?.tableNumber || null}
       tableName={resolvedTable?.name || null}
-      qrToken={resolvedTable ? qrTokenQuery || null : null}
+      qrToken={resolvedTable?.qrToken || qrTokenQuery || null}
       tableMessage={tableMessage}
       offers={publicOffers}
     />
